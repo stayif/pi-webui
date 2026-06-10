@@ -1,6 +1,6 @@
 {
   "name": "pi-webui",
-  "version": "0.1.0",
+  "version": "0.11.0",
   "private": true,
   "description": "A lightweight local web UI for the Pi coding agent. Reads your local Pi runtime directly — no API keys, no login, no database.",
   "license": "MIT",

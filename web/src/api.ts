@@ -36,4 +36,5 @@ export const api = {
   tree: (ws?: string) => getJson<{ tree: TreeNode[] }>(`/api/tree${q(ws)}`).then((r) => r.tree),
   models: (ws?: string) =>
     getJson<{ models: ModelInfo[] }>(`/api/models${q(ws)}`).then((r) => r.models),
+  exportSessionUrl: (ws?: string) => `/api/export${q(ws)}`,
 };

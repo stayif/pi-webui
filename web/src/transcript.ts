@@ -131,7 +131,7 @@ export function applyEvent(
           kind: "tool",
           toolName: name,
           text: formatToolCall(name, args),
-          activity: toolActivity(name),
+          activity: "tool",
         },
       ]);
       break;
@@ -154,7 +154,7 @@ export function applyEvent(
             kind: "tool",
             toolName: name,
             text: `${name} → ${truncate(text, 600)}`,
-            activity: isError ? "error" : toolActivity(name),
+            activity: isError ? "error" : "tool",
             isError,
           },
         ]);
@@ -214,16 +214,6 @@ function resultToText(result: unknown): string {
   } catch {
     return "";
   }
-}
-
-function toolActivity(name: string): TranscriptItem["activity"] {
-  const n = name.toLowerCase();
-  if (n.includes("bash") || n.includes("shell") || n.includes("exec")) return "shell";
-  if (n.includes("read") || n.includes("write") || n.includes("edit") || n.includes("file"))
-    return "file";
-  if (n.includes("fetch") || n.includes("http") || n.includes("web") || n.includes("network"))
-    return "network";
-  return "tool";
 }
 
 function truncate(s: string, n: number): string {

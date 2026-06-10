@@ -151,6 +151,10 @@ export class RuntimeManager {
     await this.session.compact(customInstructions);
   }
 
+  async exportHtml(outputPath: string): Promise<string> {
+    return this.session.exportToHtml(outputPath);
+  }
+
   // ---- session-replacement operations ----
 
   async newSession(): Promise<void> {

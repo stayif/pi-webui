@@ -68,7 +68,7 @@ export function messagesToTranscript(messages: unknown[]): TranscriptItem[] {
                 kind: "tool",
                 toolName: name,
                 text: formatToolCall(name, b.arguments),
-                activity: toolActivity(name),
+                activity: "tool",
               });
             }
           }
@@ -84,7 +84,7 @@ export function messagesToTranscript(messages: unknown[]): TranscriptItem[] {
             kind: "tool",
             toolName: name,
             text: `${name} → ${truncate(text, 600)}`,
-            activity: isError ? "error" : toolActivity(name),
+            activity: isError ? "error" : "tool",
             isError,
           });
           break;
@@ -101,7 +101,7 @@ export function messagesToTranscript(messages: unknown[]): TranscriptItem[] {
             text: `$ ${cmd}\n${truncate(out, 600)}${
               code != null ? `\n(exit ${code})` : ""
             }`,
-            activity: "shell",
+            activity: typeof code === "number" && code !== 0 ? "error" : "tool",
             isError: typeof code === "number" && code !== 0,
           });
           break;
@@ -151,7 +151,7 @@ export function messagesToTranscript(messages: unknown[]): TranscriptItem[] {
               kind: "tool",
               toolName: name,
               text: formatToolCall(name, b.arguments),
-              activity: toolActivity(name),
+              activity: "tool",
             });
           }
         }
@@ -167,7 +167,7 @@ export function messagesToTranscript(messages: unknown[]): TranscriptItem[] {
           kind: "tool",
           toolName: name,
           text: `${name} → ${truncate(text, 600)}`,
-          activity: isError ? "error" : toolActivity(name),
+          activity: isError ? "error" : "tool",
           isError,
         });
         break;
@@ -184,7 +184,7 @@ export function messagesToTranscript(messages: unknown[]): TranscriptItem[] {
           text: `$ ${cmd}\n${truncate(out, 600)}${
             code != null ? `\n(exit ${code})` : ""
           }`,
-          activity: "shell",
+          activity: typeof code === "number" && code !== 0 ? "error" : "tool",
           isError: typeof code === "number" && code !== 0,
         });
         break;
@@ -250,17 +250,6 @@ function formatToolCall(name: string, args: unknown): string {
     }
   }
   return `${name}()`;
-}
-
-/** Map a tool name to an activity hue for the right column filters. */
-function toolActivity(name: string): TranscriptItem["activity"] {
-  const n = name.toLowerCase();
-  if (n.includes("bash") || n.includes("shell") || n.includes("exec")) return "shell";
-  if (n.includes("read") || n.includes("write") || n.includes("edit") || n.includes("file"))
-    return "file";
-  if (n.includes("fetch") || n.includes("http") || n.includes("web") || n.includes("network"))
-    return "network";
-  return "tool";
 }
 
 function truncate(s: string, n: number): string {

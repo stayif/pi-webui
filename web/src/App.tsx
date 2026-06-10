@@ -22,9 +22,6 @@ import { usePiSocket } from "./usePiSocket.ts";
 const ACTIVITY_TYPES = [
   "reasoning",
   "tool",
-  "shell",
-  "file",
-  "network",
   "system",
   "error",
 ] as const;
@@ -427,6 +424,11 @@ export function App() {
     }, 120);
   }, [activeWs, send, state]);
 
+  const handleExportSession = useCallback(() => {
+    if (!activeWs || isRuntimeBusy(state)) return;
+    window.open(api.exportSessionUrl(activeWs), "_blank", "noopener,noreferrer");
+  }, [activeWs, state]);
+
   const handleCompact = useCallback(() => {
     if (!activeWs || state?.isCompacting) return;
     send({ type: "compact", workspaceId: activeWs });
@@ -460,6 +462,7 @@ export function App() {
               next.has(rootPath) ? next.delete(rootPath) : next.add(rootPath);
               return next;
             })}
+          onExport={handleExportSession}
           onClone={handleCloneSession}
           onDeleteSessions={handleDeleteSessions}
         />
@@ -474,6 +477,7 @@ export function App() {
           thinkingLevel={displayThinkingLevel}
           thinkingOptions={thinkingOptions}
           sessionName={sessionName}
+          sessionMeta={formatSessionMeta(state, t)}
           onSubmit={submit}
           onAbort={() => activeWs && send({ type: "abort", workspaceId: activeWs })}
           onClearQueue={() => activeWs && send({ type: "clear_queue", workspaceId: activeWs })}
@@ -489,6 +493,7 @@ export function App() {
 
         <ActivityColumn
           items={activityItems}
+          toolCallCount={state?.stats.toolCalls ?? 0}
           hidden={hiddenActivity}
           collapsedLogs={collapsedLogs}
           onToggle={(type) =>
@@ -582,6 +587,7 @@ function SessionColumn({
   onSelect,
   onTogglePin,
   onToggleExpanded,
+  onExport,
   onClone,
   onDeleteSessions,
 }: {
@@ -595,6 +601,7 @@ function SessionColumn({
   onSelect: (path: string) => void;
   onTogglePin: (rootPath: string) => void;
   onToggleExpanded: (rootPath: string) => void;
+  onExport: () => void;
   onClone: (sessionPath: string) => void;
   onDeleteSessions: (paths: string[]) => void;
 }) {
@@ -630,6 +637,7 @@ function SessionColumn({
                   onSelect={onSelect}
                   onTogglePin={onTogglePin}
                   onToggleExpanded={onToggleExpanded}
+                  onExport={onExport}
                   onClone={onClone}
                   onDeleteSessions={onDeleteSessions}
                 />
@@ -651,6 +659,7 @@ function SessionColumn({
               onSelect={onSelect}
               onTogglePin={onTogglePin}
               onToggleExpanded={onToggleExpanded}
+              onExport={onExport}
               onClone={onClone}
               onDeleteSessions={onDeleteSessions}
             />
@@ -676,6 +685,7 @@ function SessionGroup({
   onSelect,
   onTogglePin,
   onToggleExpanded,
+  onExport,
   onClone,
   onDeleteSessions,
 }: {
@@ -687,6 +697,7 @@ function SessionGroup({
   onSelect: (path: string) => void;
   onTogglePin: (rootPath: string) => void;
   onToggleExpanded: (rootPath: string) => void;
+  onExport: () => void;
   onClone: (sessionPath: string) => void;
   onDeleteSessions: (paths: string[]) => void;
 }) {
@@ -712,6 +723,17 @@ function SessionGroup({
           <span className="spacer" />
           <span className="ts-inline mono">{relTime(node.session.modified, t)}</span>
           <div className="acts">
+            {rootActive && (
+              <ActionButton
+                className="export-btn"
+                title={runtimeBusy ? t.exportDisabledBusy : t.exportSession}
+                label={t.exportSession}
+                disabled={runtimeBusy}
+                onClick={onExport}
+              >
+                <DownloadIcon />
+              </ActionButton>
+            )}
             <ActionButton
               className="clone-btn"
               title={cloneDisabled ? t.cloneDisabledStreaming : t.cloneToMain}
@@ -848,6 +870,7 @@ function ChatColumn({
   thinkingLevel,
   thinkingOptions,
   sessionName,
+  sessionMeta,
   onSubmit,
   onAbort,
   onClearQueue,
@@ -867,6 +890,7 @@ function ChatColumn({
   thinkingLevel: string;
   thinkingOptions: string[];
   sessionName: string;
+  sessionMeta: string | null;
   onSubmit: (text?: string, attachments?: PromptAttachment[]) => void;
   onAbort: () => void;
   onClearQueue: () => void;
@@ -942,6 +966,8 @@ function ChatColumn({
     <section className="col col-chat">
       <div className="col-head">
         <SessionNameEditor value={sessionName} onSubmit={onRenameSession} />
+        <span className="spacer" />
+        {sessionMeta && <span className="session-meta mono">{sessionMeta}</span>}
         <span className="spacer" />
         {state && <span className="count mono">session #{state.sessionId.slice(0, 6)}</span>}
       </div>
@@ -1437,6 +1463,7 @@ function ContextMeter({
 
 function ActivityColumn({
   items,
+  toolCallCount,
   hidden,
   collapsedLogs,
   onToggle,
@@ -1444,6 +1471,7 @@ function ActivityColumn({
   onClear,
 }: {
   items: TranscriptItem[];
+  toolCallCount: number;
   hidden: Set<ActivityType>;
   collapsedLogs: Set<ActivityType>;
   onToggle: (type: ActivityType) => void;
@@ -1458,6 +1486,7 @@ function ActivityColumn({
     <section className="col col-logs">
       <div className="col-head">
         <h2>{t.activity}</h2>
+        <span className="count">{t.toolCallCount(toolCallCount)}</span>
         <span className="spacer" />
         <button className="ghost-btn" onClick={onClear}>{t.clear}</button>
       </div>
@@ -1556,7 +1585,7 @@ function useAutoScroll(items: unknown[]) {
 function loadCollapsed(): Set<ActivityType> {
   try {
     const raw = localStorage.getItem(COLLAPSED_STORE);
-    if (raw) return new Set(JSON.parse(raw) as ActivityType[]);
+    if (raw) return normalizeActivitySet(JSON.parse(raw));
   } catch {
     // ignore
   }
@@ -1566,11 +1595,20 @@ function loadCollapsed(): Set<ActivityType> {
 function loadHidden(): Set<ActivityType> {
   try {
     const raw = localStorage.getItem(HIDDEN_STORE);
-    if (raw) return new Set(JSON.parse(raw) as ActivityType[]);
+    if (raw) return normalizeActivitySet(JSON.parse(raw));
   } catch {
     // ignore
   }
   return new Set();
+}
+
+function normalizeActivitySet(raw: unknown): Set<ActivityType> {
+  if (!Array.isArray(raw)) return new Set();
+  return new Set(raw.filter(isActivityType));
+}
+
+function isActivityType(value: unknown): value is ActivityType {
+  return typeof value === "string" && ACTIVITY_TYPES.includes(value as ActivityType);
 }
 
 function loadPinnedSessions(): Set<string> {
@@ -1655,6 +1693,19 @@ function resolveThinkingOptions(
   }
   if (currentModel?.thinkingLevels?.length) return currentModel.thinkingLevels;
   return ["off"];
+}
+
+function formatSessionMeta(state: SessionState | null, t: Strings): string | null {
+  if (!state) return null;
+  const tokens = formatMetricNumber(state.stats.tokens.total);
+  const cacheRead = formatMetricNumber(state.stats.tokens.cacheRead);
+  const cacheWrite = formatMetricNumber(state.stats.tokens.cacheWrite);
+  return t.sessionMeta(tokens, cacheRead, cacheWrite, `$${state.stats.cost.toFixed(4)}`);
+}
+
+function formatMetricNumber(value: number): string {
+  if (value < 1000) return `${value}`;
+  return `${Math.round(value / 100) / 10}K`;
 }
 
 function normalizeThinkingOptions(options: string[]): ThinkingOption[] {
@@ -1958,6 +2009,16 @@ function PinIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="currentColor">
       <path d="M14.9 3.5c.8 0 1.2 1 .6 1.6l-1.1 1.1 4.4 4.4 1.1-1.1c.6-.6 1.6-.2 1.6.6v.4c0 .5-.2 1-.6 1.4l-2.8 2.8-4.2-.7-4.9 4.9v4.3l-.7.7-.7-.7v-4.3l4.9-4.9-.7-4.2 2.8-2.8c.4-.4.9-.6 1.4-.6h.4z" />
+    </svg>
+  );
+}
+
+function DownloadIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3v12" />
+      <path d="m7 10 5 5 5-5" />
+      <path d="M5 21h14" />
     </svg>
   );
 }

@@ -1,4 +1,7 @@
 import { Hono } from "hono";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
@@ -64,6 +67,28 @@ export function createApi(mgr: WorkspaceManager): Hono {
   api.get("/tree", (c) => {
     const rt = mgr.resolveRuntime(c.req.query("ws") || undefined);
     return c.json({ tree: rt ? rt.tree() : [] });
+  });
+
+  api.get("/export", async (c) => {
+    const rt = mgr.resolveRuntime(c.req.query("ws") || undefined);
+    if (!rt) return c.text("No active runtime", 404);
+    const state = rt.snapshot();
+    if (state.isStreaming || state.isCompacting || state.steeringMessages.length > 0 || state.followUpMessages.length > 0) {
+      return c.text("Runtime is not idle", 409);
+    }
+
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-webui-export-"));
+    const filename = `pi-session-${state.sessionId.slice(0, 8)}.html`;
+    const outputPath = path.join(tempDir, filename);
+    try {
+      const exportedPath = await rt.exportHtml(outputPath);
+      const html = await fs.readFile(exportedPath);
+      c.header("Content-Type", "text/html; charset=utf-8");
+      c.header("Content-Disposition", `attachment; filename="${filename}"`);
+      return c.body(html);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   // ── models (shared registry — process-global) ──

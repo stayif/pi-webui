@@ -142,7 +142,7 @@ export interface TranscriptItem {
   kind: "user" | "assistant" | "reasoning" | "tool" | "system" | "divider";
   text: string;
   /** Activity sub-type, used for filtering/coloring the right column. */
-  activity?: "reasoning" | "tool" | "shell" | "file" | "network" | "system" | "error";
+  activity?: "reasoning" | "tool" | "system" | "error";
   /** Tool name for `kind: "tool"`. */
   toolName?: string;
   /** True for tool/system items that represent an error. */

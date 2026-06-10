@@ -1,7 +1,7 @@
 import { createContext, useContext } from "react";
 
 export type Lang = "zh" | "en";
-export type ActivityLabelKey = "reasoning" | "tool" | "shell" | "file" | "network" | "system" | "error";
+export type ActivityLabelKey = "reasoning" | "tool" | "system" | "error";
 
 export const LANG_STORE = "pi-webui:lang";
 
@@ -27,6 +27,8 @@ export interface Strings {
   cloneDisabledStreaming: string;
   cloneToMain: string;
   cloneSession: string;
+  exportSession: string;
+  exportDisabledBusy: string;
   unpin: string;
   pin: string;
   deleteDisabledActive: string;
@@ -66,6 +68,7 @@ export interface Strings {
   // Session name editor
   editSessionTitle: string;
   defaultConversation: string;
+  sessionMeta: (tokens: string, cacheRead: string, cacheWrite: string, cost: string) => string;
 
   // Message bubble
   forkRewrite: string;
@@ -87,6 +90,7 @@ export interface Strings {
 
   // Activity column
   activity: string;
+  toolCallCount: (n: number) => string;
   clear: string;
   toolCall: string;
   activityLabels: Record<ActivityLabelKey, string>;
@@ -130,6 +134,8 @@ const zh: Strings = {
   cloneDisabledStreaming: "当前 runtime 非 idle，不能克隆",
   cloneToMain: "克隆当前路径为独立主会话",
   cloneSession: "克隆会话",
+  exportSession: "导出当前会话",
+  exportDisabledBusy: "当前 runtime 非 idle，不能导出",
   unpin: "取消置顶",
   pin: "置顶会话",
   deleteDisabledActive: "不能删除当前活动会话",
@@ -166,6 +172,7 @@ const zh: Strings = {
 
   editSessionTitle: "编辑会话标题",
   defaultConversation: "对话",
+  sessionMeta: (tokens, cacheRead, cacheWrite, cost) => `tokens ${tokens} · cache ${cacheRead}/${cacheWrite} · ${cost}`,
 
   forkRewrite: "Fork 并重写这条消息",
   forkToReply: "Fork 到这条回复",
@@ -183,14 +190,12 @@ const zh: Strings = {
   thinkingStrengthTitle: (label) => `推理强度：${label}`,
 
   activity: "活动",
+  toolCallCount: (n) => `${n} 工具调用`,
   clear: "清空",
-  toolCall: "tool call",
+  toolCall: "工具调用",
   activityLabels: {
     reasoning: "推理",
     tool: "工具调用",
-    shell: "Shell",
-    file: "文件",
-    network: "网络",
     system: "系统",
     error: "错误",
   },
@@ -230,6 +235,8 @@ const en: Strings = {
   cloneDisabledStreaming: "Runtime is not idle; cloning is disabled",
   cloneToMain: "Clone this path as a standalone main session",
   cloneSession: "Clone session",
+  exportSession: "Export active session",
+  exportDisabledBusy: "Runtime is not idle; export is disabled",
   unpin: "Unpin",
   pin: "Pin session",
   deleteDisabledActive: "Can't delete the active session",
@@ -266,6 +273,7 @@ const en: Strings = {
 
   editSessionTitle: "Edit session title",
   defaultConversation: "Conversation",
+  sessionMeta: (tokens, cacheRead, cacheWrite, cost) => `tokens ${tokens} · cache ${cacheRead}/${cacheWrite} · ${cost}`,
 
   forkRewrite: "Fork and rewrite this message",
   forkToReply: "Fork to this reply",
@@ -283,14 +291,12 @@ const en: Strings = {
   thinkingStrengthTitle: (label) => `Reasoning effort: ${label}`,
 
   activity: "Activity",
+  toolCallCount: (n) => `${n} tool calls`,
   clear: "Clear",
   toolCall: "tool call",
   activityLabels: {
     reasoning: "reasoning",
     tool: "tool call",
-    shell: "shell",
-    file: "file",
-    network: "network",
     system: "system",
     error: "error",
   },

@@ -304,7 +304,19 @@ input {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  max-width: 60%;
+  max-width: 45%;
+}
+
+.session-meta {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 44%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--meta);
+  font-size: 11px;
+  text-align: center;
 }
 
 .sess-name .name-text {
@@ -1801,18 +1813,6 @@ input {
   background: var(--t-tool);
 }
 
-.swatch[data-type="shell"] {
-  background: var(--t-shell);
-}
-
-.swatch[data-type="file"] {
-  background: var(--t-file);
-}
-
-.swatch[data-type="network"] {
-  background: var(--t-network);
-}
-
 .swatch[data-type="system"] {
   background: var(--t-system);
 }
@@ -1880,18 +1880,6 @@ input {
   color: var(--t-tool);
 }
 
-.log[data-type="shell"] .title {
-  color: var(--t-shell);
-}
-
-.log[data-type="file"] .title {
-  color: var(--t-file);
-}
-
-.log[data-type="network"] .title {
-  color: var(--t-network);
-}
-
 .log[data-type="system"] .title {
   color: var(--t-system);
 }
@@ -1906,18 +1894,6 @@ input {
 
 .log[data-type="tool"] .badge {
   background: var(--t-tool);
-}
-
-.log[data-type="shell"] .badge {
-  background: var(--t-shell);
-}
-
-.log[data-type="file"] .badge {
-  background: var(--t-file);
-}
-
-.log[data-type="network"] .badge {
-  background: var(--t-network);
 }
 
 .log[data-type="system"] .badge {
