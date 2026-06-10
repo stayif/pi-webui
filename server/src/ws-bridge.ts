@@ -1,7 +1,12 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
 import type { WSContext } from "hono/ws";
 
 import type { WorkspaceManager } from "./workspace-manager.ts";
 import type { ClientMessage, PromptAttachment, ServerMessage } from "./protocol.ts";
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Bridges Pi event streams to WebSocket clients and routes commands back.
@@ -12,6 +17,10 @@ export class WsBridge {
   constructor(private readonly mgr: WorkspaceManager) {
     mgr.onAgentEvent = (workspaceId, event) => {
       this.broadcast({ type: "agent_event", workspaceId, event });
+      if ((event as { type?: string }).type === "queue_update") {
+        const rt = this.mgr.resolveRuntime(workspaceId);
+        if (rt) this.broadcast({ type: "state", state: rt.snapshot() });
+      }
     };
     mgr.onSessionReplaced = (state) => {
       this.broadcast({ type: "session_replaced", state });
@@ -65,6 +74,14 @@ export class WsBridge {
         this.broadcastWorkspaces();
         break;
       }
+      case "open_workspace_picker": {
+        const selected = await pickWorkspaceDirectory();
+        if (selected) {
+          await this.mgr.openWorkspace(selected);
+          this.broadcastWorkspaces();
+        }
+        break;
+      }
       case "close_workspace":
         await this.mgr.closeWorkspace(msg.workspaceId);
         this.broadcastWorkspaces();
@@ -103,6 +120,12 @@ export class WsBridge {
       case "abort": {
         const rt = await this.mgr.ensureRuntime(wid);
         await rt.abort();
+        break;
+      }
+      case "clear_queue": {
+        const rt = await this.mgr.ensureRuntime(wid);
+        rt.clearQueue();
+        this.broadcast({ type: "state", state: rt.snapshot() });
         break;
       }
       case "compact": {
@@ -182,6 +205,31 @@ export class WsBridge {
       /* ignore */
     }
   }
+}
+
+async function pickWorkspaceDirectory(): Promise<string | null> {
+  if (process.platform !== "win32") {
+    throw new Error("Directory picker is only implemented on Windows.");
+  }
+
+  const script = [
+    "Add-Type -AssemblyName System.Windows.Forms",
+    "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog",
+    "$dialog.Description = '选择 pi workspace 目录'",
+    "$dialog.ShowNewFolderButton = $true",
+    "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {",
+    "  [Console]::Out.Write($dialog.SelectedPath)",
+    "}",
+  ].join("; ");
+
+  const { stdout } = await execFileAsync(
+    "powershell.exe",
+    ["-NoProfile", "-STA", "-Command", script],
+    { windowsHide: false },
+  );
+
+  const selected = stdout.trim();
+  return selected.length > 0 ? selected : null;
 }
 
 function preparePrompt(text: string, attachments: PromptAttachment[]): {

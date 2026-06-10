@@ -296,6 +296,11 @@ export function App() {
     [sessions, state?.sessionId],
   );
 
+  const activeWorkspace = useMemo(
+    () => workspaces.find((workspace) => workspace.id === activeWs) ?? null,
+    [activeWs, workspaces],
+  );
+
   const sessionName = useMemo(() => {
     const key = sessionStorageKey(state);
     return (
@@ -308,8 +313,20 @@ export function App() {
   }, [activeSession, sessionNames, state]);
 
   const currentModel = useMemo(
-    () => resolveCurrentModel(models, state?.model, storedModel),
-    [models, state?.model, storedModel],
+    () => resolveCurrentModel(models, state?.model, activeWorkspace?.defaultModel, storedModel),
+    [activeWorkspace?.defaultModel, models, state?.model, storedModel],
+  );
+
+  const thinkingOptions = useMemo(
+    () => resolveThinkingOptions(state, activeWorkspace, currentModel),
+    [activeWorkspace, currentModel, state],
+  );
+
+  const currentThinkingLevel = state?.thinkingLevel ?? activeWorkspace?.defaultThinkingLevel ?? "off";
+
+  const displayThinkingLevel = useMemo(
+    () => (thinkingOptions.includes(currentThinkingLevel) ? currentThinkingLevel : (thinkingOptions[0] ?? "off")),
+    [currentThinkingLevel, thinkingOptions],
   );
 
   const chatItems = useMemo(
@@ -336,10 +353,12 @@ export function App() {
     const trimmed = text.trim();
     if ((!trimmed && attachments.length === 0) || !activeWs) return;
     abortDividerRef.current = null;
-    setItems((current) => [
-      ...current,
-      { id: crypto.randomUUID(), kind: "user", text: formatSubmittedText(trimmed, attachments) },
-    ]);
+    if (!state?.isStreaming) {
+      setItems((current) => [
+        ...current,
+        { id: crypto.randomUUID(), kind: "user", text: formatSubmittedText(trimmed, attachments) },
+      ]);
+    }
     send({
       type: "prompt",
       text: trimmed,
@@ -358,8 +377,9 @@ export function App() {
     setSessionNames((current) => ({ ...current, [key]: trimmed }));
     if (activeWsRef.current) {
       send({ type: "set_session_name", name: trimmed, workspaceId: activeWsRef.current });
+      refreshSessionListWithBackoff();
     }
-  }, [send, state]);
+  }, [refreshSessionListWithBackoff, send, state]);
 
   const handleSetModel = useCallback((provider: string, modelId: string) => {
     setStoredModel({ prov: provider, model: modelId });
@@ -409,6 +429,7 @@ export function App() {
           expandedGroups={expandedGroups}
           activeSessionId={state?.sessionId}
           activeSessionStreaming={state?.isStreaming === true}
+          onNewSession={() => activeWs && send({ type: "new_session", workspaceId: activeWs })}
           onSelect={(path) =>
             activeWs && send({ type: "switch_session", sessionPath: path, workspaceId: activeWs })}
           onTogglePin={(rootPath) =>
@@ -434,10 +455,12 @@ export function App() {
           setInput={setInput}
           currentModel={currentModel}
           models={models}
+          thinkingLevel={displayThinkingLevel}
+          thinkingOptions={thinkingOptions}
           sessionName={sessionName}
           onSubmit={submit}
-          onNewSession={() => activeWs && send({ type: "new_session", workspaceId: activeWs })}
           onAbort={() => activeWs && send({ type: "abort", workspaceId: activeWs })}
+          onClearQueue={() => activeWs && send({ type: "clear_queue", workspaceId: activeWs })}
           onSetModel={handleSetModel}
           onSetThinkingLevel={(level) =>
             activeWs && send({ type: "set_thinking_level", level, workspaceId: activeWs })}
@@ -475,10 +498,7 @@ export function App() {
           send({ type: "switch_workspace", workspaceId: id });
         }}
         onClose={(id) => send({ type: "close_workspace", workspaceId: id })}
-        onOpen={() => {
-          const path = window.prompt("打开 workspace — 输入项目目录的绝对路径：");
-          if (path && path.trim()) send({ type: "open_workspace", path: path.trim() });
-        }}
+        onOpen={() => send({ type: "open_workspace_picker" })}
       />
     </div>
   );
@@ -527,6 +547,7 @@ function SessionColumn({
   expandedGroups,
   activeSessionId,
   activeSessionStreaming,
+  onNewSession,
   onSelect,
   onTogglePin,
   onToggleExpanded,
@@ -539,6 +560,7 @@ function SessionColumn({
   expandedGroups: Set<string>;
   activeSessionId?: string;
   activeSessionStreaming: boolean;
+  onNewSession: () => void;
   onSelect: (path: string) => void;
   onTogglePin: (rootPath: string) => void;
   onToggleExpanded: (rootPath: string) => void;
@@ -602,6 +624,12 @@ function SessionColumn({
             />
           ))}
         </div>
+      </div>
+      <div className="session-foot">
+        <button className="new-session-btn" type="button" onClick={onNewSession} title="新建会话">
+          <PlusIcon />
+          <span>新会话</span>
+        </button>
       </div>
     </section>
   );
@@ -784,10 +812,12 @@ function ChatColumn({
   setInput,
   currentModel,
   models,
+  thinkingLevel,
+  thinkingOptions,
   sessionName,
   onSubmit,
-  onNewSession,
   onAbort,
+  onClearQueue,
   onSetModel,
   onSetThinkingLevel,
   onCompact,
@@ -800,10 +830,12 @@ function ChatColumn({
   setInput: (value: string) => void;
   currentModel: ModelInfo | null;
   models: ModelInfo[];
+  thinkingLevel: string;
+  thinkingOptions: string[];
   sessionName: string;
   onSubmit: (text?: string, attachments?: PromptAttachment[]) => void;
-  onNewSession: () => void;
   onAbort: () => void;
+  onClearQueue: () => void;
   onSetModel: (provider: string, modelId: string) => void;
   onSetThinkingLevel: (level: string) => void;
   onCompact: () => void;
@@ -812,6 +844,7 @@ function ChatColumn({
 }) {
   const scrollRef = useAutoScroll(items);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [dragActive, setDragActive] = useState(false);
   const [dropNotice, setDropNotice] = useState<string | null>(null);
@@ -845,9 +878,29 @@ function ChatColumn({
 
   const submitCurrent = useCallback(() => {
     if (!input.trim() && attachments.length === 0) return;
-    onSubmit(input, attachmentsToPrompt(attachments));
+    const trimmed = input.trim();
+    const promptAttachments = attachmentsToPrompt(attachments);
+    onSubmit(trimmed, promptAttachments);
+    setInput("");
     setAttachments([]);
-  }, [attachments, input, onSubmit]);
+  }, [attachments, input, onSubmit, setInput]);
+
+  const clearQueueToComposer = useCallback(() => {
+    const queuedText = state?.steeringMessages.join("\n").trim();
+    if (!queuedText) return;
+    setInput(input.trim() ? `${input.trim()}\n${queuedText}` : queuedText);
+    onClearQueue();
+  }, [input, onClearQueue, setInput, state?.steeringMessages]);
+
+  const handleFiles = useCallback(async (files: FileList | File[]) => {
+    try {
+      const next = await readFileAttachments([...files], attachments);
+      if (next.rejectedLarge > 0) showDropNotice(`已忽略超过 ${formatBytes(MAX_ATTACHMENT_BYTES)} 的文件`);
+      if (next.attachments.length > attachments.length) setAttachments(next.attachments);
+    } catch (error) {
+      showDropNotice(error instanceof Error ? error.message : "读取文件失败");
+    }
+  }, [attachments, showDropNotice]);
 
   return (
     <section className="col col-chat">
@@ -875,39 +928,28 @@ function ChatColumn({
 
       <div className="composer">
         <div className="composer-bar">
-          <div className="composer-pickers">
+          <div className="model-group">
             <ModelPicker currentModel={currentModel} models={models} onSetModel={onSetModel} />
-            <ThinkingLevelPicker
-              currentLevel={state?.thinkingLevel ?? "off"}
-              options={state?.availableThinkingLevels ?? ["off"]}
+            <ThinkingLevelTabs
+              currentLevel={thinkingLevel}
+              options={thinkingOptions}
               onSetLevel={onSetThinkingLevel}
             />
           </div>
-          <ContextMeter
-            state={state}
-            onCompact={onCompact}
-          />
-          <span />
-        </div>
-        {attachments.length > 0 && (
-          <div className="attachment-row" aria-label="已附加文件">
-            {attachments.map((attachment) => (
-              <span className="attachment-chip" key={attachment.id} title={`${attachment.name} · ${formatBytes(attachment.size)}`}>
-                <span className={`att-kind ${attachment.type}`}>{attachment.type === "image" ? "IMG" : "TXT"}</span>
-                <span className="att-name">{attachment.name}</span>
-                <span className="att-size mono">{formatBytes(attachment.size)}</span>
-                <button
-                  type="button"
-                  aria-label={`移除 ${attachment.name}`}
-                  title="移除附件"
-                  onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}
-                >
-                  ×
-                </button>
-              </span>
-            ))}
+          <div className="composer-status">
+            {state?.isStreaming && (
+              <button className="abort-chip" type="button" onClick={onAbort} title="停止当前执行">
+                <StopIcon />
+                <span>停止</span>
+              </button>
+            )}
+            <ContextMeter state={state} onCompact={onCompact} />
           </div>
-        )}
+        </div>
+        <SteeringDock
+          messages={state?.steeringMessages ?? []}
+          onClearToComposer={clearQueueToComposer}
+        />
         <div
           className={`box ${dragActive ? "drag-active" : ""}`}
           onDragEnter={(event) => {
@@ -930,37 +972,119 @@ function ChatColumn({
               <span>支持文本与图片，文件夹会被忽略</span>
             </div>
           )}
-          <textarea
-            ref={textareaRef}
-            value={input}
-            rows={1}
-            placeholder="给 pi 发消息…  (Enter 发送 · Shift+Enter 换行)"
-            onChange={(e) => {
-              setInput(e.target.value);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                submitCurrent();
-              }
-            }}
-          />
-          {state?.isStreaming ? (
-            <button className="send stop" onClick={onAbort} aria-label="停止" title="停止">■</button>
-          ) : (
-            <button className="send" onClick={onNewSession} aria-label="新建会话" title="新建会话">+</button>
+          {attachments.length > 0 && (
+            <div className="attach-tray" aria-label="已附加文件">
+              {attachments.map((attachment) => (
+                <span className="file-card" key={attachment.id} title={`${attachment.name} · ${formatBytes(attachment.size)}`}>
+                  <span className={`fc-ico ${attachment.type}`}><FileIcon /></span>
+                  <span className="fc-main">
+                    <span className="fc-name mono">{attachment.name}</span>
+                    <span className="fc-meta mono">{attachment.type === "image" ? "image" : "text"} · {formatBytes(attachment.size)}</span>
+                  </span>
+                  <button
+                    type="button"
+                    className="fc-x"
+                    aria-label={`移除 ${attachment.name}`}
+                    title="移除附件"
+                    onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
           )}
-        </div>
-        <div className="hint">
-          <span className="mono">Enter 发送</span>
-          <span className="mono">Shift+Enter 换行</span>
-          <span className="mono">Esc 中断</span>
-          <span className="mono">拖入文件附加</span>
-          <span className="mono">按钮新建会话</span>
+          <div className="input-row">
+            <button
+              type="button"
+              className="attach-btn"
+              aria-label="附加文件"
+              title="附加文件"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <PaperclipIcon />
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              hidden
+              onChange={(event) => {
+                const files = event.currentTarget.files;
+                if (files?.length) void handleFiles(files);
+                event.currentTarget.value = "";
+              }}
+            />
+            <textarea
+              ref={textareaRef}
+              value={input}
+              rows={1}
+              placeholder={
+                state?.isStreaming
+                  ? "当前处理中，Enter 加入 steer 队列，Shift+Enter 换行"
+                  : "Enter 发送，Shift+Enter 换行，/ 唤起命令"
+              }
+              onChange={(e) => {
+                setInput(e.target.value);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  submitCurrent();
+                }
+              }}
+            />
+            <button className="send" onClick={submitCurrent} aria-label="发送" title={state?.isStreaming ? "加入 steer 队列" : "发送"}>
+              <SendIcon />
+            </button>
+          </div>
         </div>
         {dropNotice && <div className="drop-notice">{dropNotice}</div>}
       </div>
     </section>
+  );
+}
+
+function SteeringDock({
+  messages,
+  onClearToComposer,
+}: {
+  messages: string[];
+  onClearToComposer: () => void;
+}) {
+  if (messages.length === 0) return null;
+  return (
+    <div className="steering-dock has-items" aria-label="待送入消息队列">
+      <div className="steering-label">
+        <span className="steering-title">
+          <span className="pulse" />
+          <span className="mono">待送入 · Pi 原生队列逐条投递</span>
+        </span>
+        <button className="queue-clear" type="button" onClick={onClearToComposer} title="全部取消并回填到编辑框">
+          全部取消
+        </button>
+      </div>
+      <div className="steering-stack">
+        {messages.map((message, index) => (
+          <SteeringChip key={`${index}-${message}`} message={message} index={index} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SteeringChip({
+  message,
+  index,
+}: {
+  message: string;
+  index: number;
+}) {
+  return (
+    <div className="steering-chip">
+      <span className="sc-index mono">{index + 1}</span>
+      <span className="sc-text" title={message}>{message}</span>
+    </div>
   );
 }
 
@@ -1053,7 +1177,9 @@ function MessageBubble({
   return (
     <div className={`msg ${isUser ? "user" : "agent"}`}>
       <span className={`av ${isUser ? "" : "prov-av"}`}>
-        {!isUser && (
+        {isUser ? (
+          <img src="/avatar.jpg" alt="" />
+        ) : (
           <span
             className="prov"
             data-prov={providerId}
@@ -1202,7 +1328,7 @@ function ModelPicker({
   );
 }
 
-function ThinkingLevelPicker({
+function ThinkingLevelTabs({
   currentLevel,
   options,
   onSetLevel,
@@ -1212,67 +1338,22 @@ function ThinkingLevelPicker({
   onSetLevel: (level: string) => void;
 }) {
   const normalized = useMemo(() => normalizeThinkingOptions(options), [options]);
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onEsc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
-    document.addEventListener("click", onDoc);
-    document.addEventListener("keydown", onEsc);
-    return () => {
-      document.removeEventListener("click", onDoc);
-      document.removeEventListener("keydown", onEsc);
-    };
-  }, [open]);
-
-  const selected = normalized.find((option) => option.id === currentLevel) ?? {
-    id: currentLevel,
-    label: thinkingLabel(currentLevel),
-  };
-
+  if (normalized.length <= 1) return null;
   return (
-    <div className={`model-picker thinking-picker ${open ? "open" : ""}`} ref={ref}>
-      <button
-        className="model-trigger"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        onClick={(e) => {
-          e.stopPropagation();
-          setOpen((current) => !current);
-        }}
-      >
-        <span className="thinking-chip">{selected.label}</span>
-        <span className="thinking-name">Reasoning</span>
-        <span className="caret"><CaretIcon /></span>
-      </button>
-
-      <div className="model-menu" role="listbox">
-        <div className="grp-label">Thinking level</div>
-        {normalized.map((option) => {
-          const active = option.id === currentLevel;
-          return (
-            <div
-              key={option.id}
-              className="opt"
-              aria-selected={active}
-              onClick={() => {
-                onSetLevel(option.id);
-                setOpen(false);
-              }}
-            >
-              <span className="nm">{option.label}</span>
-              <span
-                className="check"
-                dangerouslySetInnerHTML={{ __html: active ? CHECK_ICON : "" }}
-              />
-            </div>
-          );
-        })}
-      </div>
+    <div className="effort-tabs" role="radiogroup" aria-label="推理强度">
+      {normalized.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          className="effort-tab"
+          role="radio"
+          aria-checked={option.id === currentLevel}
+          title={`推理强度：${option.label}`}
+          onClick={() => onSetLevel(option.id)}
+        >
+          {option.label}
+        </button>
+      ))}
     </div>
   );
 }
@@ -1486,15 +1567,43 @@ function loadTheme(): Theme {
 function resolveCurrentModel(
   models: ModelInfo[],
   activeModel: ModelInfo | undefined,
+  workspaceDefaultModel: ModelInfo | undefined,
   storedModel: StoredModelChoice | null,
 ): ModelInfo | null {
   if (activeModel) return activeModel;
+  if (workspaceDefaultModel) {
+    const match = models.find((model) =>
+      model.provider === workspaceDefaultModel.provider && model.id === workspaceDefaultModel.id);
+    return match ?? workspaceDefaultModel;
+  }
   if (storedModel) {
     const match = models.find((model) =>
       model.provider === storedModel.prov && model.id === storedModel.model);
     if (match) return match;
   }
   return models[0] ?? null;
+}
+
+function resolveThinkingOptions(
+  state: SessionState | null,
+  activeWorkspace: Workspace | null,
+  currentModel: ModelInfo | null,
+): string[] {
+  if (state?.availableThinkingLevels?.length) {
+    return state.availableThinkingLevels;
+  }
+  const workspaceModel = activeWorkspace?.defaultModel;
+  if (
+    currentModel &&
+    workspaceModel &&
+    currentModel.provider === workspaceModel.provider &&
+    currentModel.id === workspaceModel.id &&
+    activeWorkspace?.defaultThinkingLevels?.length
+  ) {
+    return activeWorkspace.defaultThinkingLevels;
+  }
+  if (currentModel?.thinkingLevels?.length) return currentModel.thinkingLevels;
+  return ["off"];
 }
 
 function normalizeThinkingOptions(options: string[]): ThinkingOption[] {
@@ -1626,7 +1735,6 @@ async function readDroppedAttachments(
   const items = [...transfer.items].filter((item) => item.kind === "file");
   const files: File[] = [];
   let rejectedDirectories = 0;
-  let rejectedLarge = 0;
 
   for (const raw of items) {
     const item = raw as DataTransferItemWithHandles;
@@ -1639,6 +1747,15 @@ async function readDroppedAttachments(
     if (file) files.push(file);
   }
 
+  const next = await readFileAttachments(files, current);
+  return { ...next, rejectedDirectories };
+}
+
+async function readFileAttachments(
+  files: File[],
+  current: ComposerAttachment[],
+): Promise<{ attachments: ComposerAttachment[]; rejectedLarge: number }> {
+  let rejectedLarge = 0;
   let totalBytes = current.reduce((sum, item) => sum + item.size, 0);
   const accepted = [...current];
   for (const file of files) {
@@ -1650,7 +1767,7 @@ async function readDroppedAttachments(
     totalBytes += file.size;
   }
 
-  return { attachments: accepted, rejectedDirectories, rejectedLarge };
+  return { attachments: accepted, rejectedLarge };
 }
 
 async function fileToAttachment(file: File): Promise<ComposerAttachment> {
@@ -1886,6 +2003,48 @@ function CompressIcon() {
   return (
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="M6 2 3 5h2v6H3l3 3M10 2l3 3h-2v6h2l-3 3" />
+    </svg>
+  );
+}
+
+function PlusIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function SendIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 19V5" />
+      <path d="M5 12l7-7 7 7" />
+    </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor">
+      <rect x="7" y="7" width="10" height="10" rx="1.5" />
+    </svg>
+  );
+}
+
+function PaperclipIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 11.5 12.2 20.3a6 6 0 0 1-8.5-8.5l9.4-9.4a4 4 0 1 1 5.7 5.7l-9.4 9.4a2 2 0 1 1-2.8-2.8l8.7-8.7" />
+    </svg>
+  );
+}
+
+function FileIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+      <path d="M14 3v5h5" />
     </svg>
   );
 }

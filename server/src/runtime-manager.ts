@@ -100,6 +100,7 @@ export class RuntimeManager {
       if (
         t === "agent_start" ||
         t === "agent_end" ||
+        t === "queue_update" ||
         t === "compaction_start" ||
         t === "compaction_end"
       ) {
@@ -140,6 +141,10 @@ export class RuntimeManager {
 
   async abort(): Promise<void> {
     await this.session.abort();
+  }
+
+  clearQueue(): void {
+    this.session.clearQueue();
   }
 
   async compact(customInstructions?: string): Promise<void> {
@@ -200,6 +205,7 @@ export class RuntimeManager {
       name: m.name,
       contextWindow: m.contextWindow,
       reasoning: m.reasoning,
+      thinkingLevels: getSupportedThinkingLevelsFromModel(m),
       available: true,
     }));
   }
@@ -244,6 +250,7 @@ export class RuntimeManager {
             name: model.name,
             contextWindow: model.contextWindow,
             reasoning: model.reasoning,
+            thinkingLevels: s.getAvailableThinkingLevels(),
             available: s.modelRegistry.hasConfiguredAuth(model),
           }
         : undefined,
@@ -251,6 +258,8 @@ export class RuntimeManager {
       availableThinkingLevels: s.getAvailableThinkingLevels(),
       isStreaming: s.isStreaming,
       isCompacting: s.isCompacting,
+      steeringMessages: [...s.getSteeringMessages()],
+      followUpMessages: [...s.getFollowUpMessages()],
       stats,
       contextUsage: s.getContextUsage(),
     };
@@ -285,6 +294,20 @@ export class RuntimeManager {
     });
     return raw.map(toNode);
   }
+}
+
+type SessionModel = NonNullable<AgentSession["model"]>;
+
+const EXTENDED_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+
+function getSupportedThinkingLevelsFromModel(model: SessionModel): string[] {
+  if (!model.reasoning) return ["off"];
+  return EXTENDED_THINKING_LEVELS.filter((level) => {
+    const mapped = model.thinkingLevelMap?.[level];
+    if (mapped === null) return false;
+    if (level === "xhigh") return mapped !== undefined;
+    return true;
+  });
 }
 
 function labelForEntry(n: any): string {

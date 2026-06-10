@@ -4,7 +4,9 @@ import fs from "node:fs";
 import {
   AuthStorage,
   ModelRegistry,
+  SettingsManager,
   SessionManager,
+  getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 
 import { RuntimeManager } from "./runtime-manager.ts";
@@ -41,6 +43,7 @@ export class WorkspaceManager {
 
   /** Process-global — model availability is the same regardless of workspace. */
   readonly sharedModels: ModelInfo[];
+  private readonly modelRegistry: ModelRegistry;
 
   // ---- callbacks ----
 
@@ -55,14 +58,8 @@ export class WorkspaceManager {
     // Standalone registry: model list is available even before the first runtime.
     const authStorage = AuthStorage.create();
     const registry = ModelRegistry.create(authStorage);
-    this.sharedModels = registry.getAvailable().map((m) => ({
-      provider: m.provider,
-      id: m.id,
-      name: m.name,
-      contextWindow: m.contextWindow,
-      reasoning: m.reasoning,
-      available: true,
-    }));
+    this.modelRegistry = registry;
+    this.sharedModels = registry.getAvailable().map(modelToInfo);
   }
 
   static async create(statePath: string): Promise<WorkspaceManager> {
@@ -177,11 +174,13 @@ export class WorkspaceManager {
     const entries: Workspace[] = [];
     for (const [id, p] of this.paths) {
       const rt = this.runtimes.get(id);
+      const defaults = this.resolveWorkspaceDefaults(p);
       entries.push({
         id,
         path: p,
         name: path.basename(p) || p,
         status: rt ? (rt.isStreaming ? "running" : "idle") : "offline",
+        ...defaults,
       });
     }
     return entries;
@@ -315,4 +314,64 @@ export class WorkspaceManager {
     this.paths.clear();
     this.activeId = null;
   }
+
+  private resolveWorkspaceDefaults(cwd: string): Pick<Workspace, "defaultModel" | "defaultThinkingLevel" | "defaultThinkingLevels"> {
+    const settings = SettingsManager.create(cwd, getAgentDir());
+    const provider = settings.getDefaultProvider();
+    const modelId = settings.getDefaultModel();
+    const model =
+      provider && modelId
+        ? this.modelRegistry.find(provider, modelId)
+        : (this.modelRegistry.getAvailable()[0] ?? undefined);
+    if (!model) return {};
+
+    const thinkingLevels = getSupportedThinkingLevelsFromModel(model);
+    const requestedThinking = settings.getDefaultThinkingLevel() ?? "medium";
+    return {
+      defaultModel: modelToInfo(model),
+      defaultThinkingLevel: clampThinkingLevel(requestedThinking, thinkingLevels),
+      defaultThinkingLevels: thinkingLevels,
+    };
+  }
+}
+
+type RegistryModel = ReturnType<ModelRegistry["getAvailable"]>[number];
+
+const EXTENDED_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+
+function modelToInfo(model: RegistryModel): ModelInfo {
+  return {
+    provider: model.provider,
+    id: model.id,
+    name: model.name,
+    contextWindow: model.contextWindow,
+    reasoning: model.reasoning,
+    thinkingLevels: getSupportedThinkingLevelsFromModel(model),
+    available: true,
+  };
+}
+
+function getSupportedThinkingLevelsFromModel(model: RegistryModel): string[] {
+  if (!model.reasoning) return ["off"];
+  return EXTENDED_THINKING_LEVELS.filter((level) => {
+    const mapped = model.thinkingLevelMap?.[level];
+    if (mapped === null) return false;
+    if (level === "xhigh") return mapped !== undefined;
+    return true;
+  });
+}
+
+function clampThinkingLevel(level: string, availableLevels: string[]): string {
+  if (availableLevels.includes(level)) return level;
+  const requestedIndex = EXTENDED_THINKING_LEVELS.indexOf(level as never);
+  if (requestedIndex === -1) return availableLevels[0] ?? "off";
+  for (let i = requestedIndex; i < EXTENDED_THINKING_LEVELS.length; i += 1) {
+    const candidate = EXTENDED_THINKING_LEVELS[i];
+    if (candidate && availableLevels.includes(candidate)) return candidate;
+  }
+  for (let i = requestedIndex - 1; i >= 0; i -= 1) {
+    const candidate = EXTENDED_THINKING_LEVELS[i];
+    if (candidate && availableLevels.includes(candidate)) return candidate;
+  }
+  return availableLevels[0] ?? "off";
 }

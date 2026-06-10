@@ -20,6 +20,12 @@ export interface Workspace {
    * `running`  — runtime is streaming
    */
   status: "offline" | "idle" | "running" | "error";
+  /** Read-only Pi settings default for this cwd (project settings over global). */
+  defaultModel?: ModelInfo;
+  /** Default thinking level after applying the model's advertised capabilities. */
+  defaultThinkingLevel?: string;
+  /** Thinking levels advertised by the default model. */
+  defaultThinkingLevels?: string[];
 }
 
 /** Session summary as shown in the session list. Mirrors Pi's SessionInfo. */
@@ -53,6 +59,8 @@ export interface ModelInfo {
   name: string;
   contextWindow: number;
   reasoning: boolean;
+  /** Thinking levels advertised by Pi's model metadata for this model. */
+  thinkingLevels: string[];
   /** Whether auth is configured locally for this model's provider. */
   available: boolean;
 }
@@ -107,6 +115,8 @@ export interface SessionState {
   availableThinkingLevels: string[];
   isStreaming: boolean;
   isCompacting: boolean;
+  steeringMessages: string[];
+  followUpMessages: string[];
   stats: SessionStats;
   contextUsage?: ContextUsage;
 }
@@ -151,6 +161,7 @@ interface WorkspaceScoped {
 export type ClientMessage =
   | ({ type: "prompt"; text: string; attachments?: PromptAttachment[]; streamingBehavior?: "steer" | "followUp" } & WorkspaceScoped)
   | ({ type: "abort" } & WorkspaceScoped)
+  | ({ type: "clear_queue" } & WorkspaceScoped)
   | ({ type: "compact"; customInstructions?: string } & WorkspaceScoped)
   | ({ type: "set_model"; provider: string; modelId: string } & WorkspaceScoped)
   | ({ type: "set_session_name"; name: string } & WorkspaceScoped)
@@ -164,6 +175,7 @@ export type ClientMessage =
   | ({ type: "navigate_tree"; targetId: string; summarize?: boolean } & WorkspaceScoped)
   // workspace lifecycle
   | { type: "open_workspace"; path: string }
+  | { type: "open_workspace_picker" }
   | { type: "close_workspace"; workspaceId: string }
   | { type: "switch_workspace"; workspaceId: string }
   | { type: "get_state" };
