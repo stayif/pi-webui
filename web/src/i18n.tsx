@@ -58,6 +58,14 @@ export interface Strings {
   readDropFailed: string;
   readFileFailed: string;
   attachedPrefix: string;
+  treeToggle: string;
+  treeNavigate: string;
+  treeGo: string;
+  treeGoTitle: string;
+  treeSummarize: string;
+  treeEmpty: string;
+  treeActive: string;
+  treeDisabledBusy: string;
 
   // Steering dock
   steerQueueAria: string;
@@ -164,6 +172,14 @@ const zh: Strings = {
   readDropFailed: "读取拖入文件失败",
   readFileFailed: "读取文件失败",
   attachedPrefix: "已附加：",
+  treeToggle: "会话树",
+  treeNavigate: "节点导航",
+  treeGo: "GO",
+  treeGoTitle: "跳转到这个节点（不总结当前分支）",
+  treeSummarize: "summarize",
+  treeEmpty: "当前会话还没有可导航节点",
+  treeActive: "当前路径",
+  treeDisabledBusy: "当前 runtime 非 idle，不能切换节点",
 
   steerQueueAria: "待送入消息队列",
   steerQueueLabel: "待送入 · Pi 原生队列逐条投递",
@@ -265,6 +281,14 @@ const en: Strings = {
   readDropFailed: "Failed to read dropped files",
   readFileFailed: "Failed to read file",
   attachedPrefix: "Attached:",
+  treeToggle: "Session tree",
+  treeNavigate: "Node navigation",
+  treeGo: "GO",
+  treeGoTitle: "Go to this node without summarizing the current branch",
+  treeSummarize: "summarize",
+  treeEmpty: "No navigable nodes in this session yet",
+  treeActive: "active path",
+  treeDisabledBusy: "Runtime is not idle; tree navigation is disabled",
 
   steerQueueAria: "Pending message queue",
   steerQueueLabel: "Pending · delivered one by one via Pi's native queue",
