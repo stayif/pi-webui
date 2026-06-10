@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Env / secrets (this project needs none, but never commit any that appear)
+.env
+.env.*
+*.pem
+auth.json
+
+# Pi runtime data — never commit local sessions
+.pi/
+sessions/
+
+# WebUI-local state (which tabs the user opened). Machine-specific, not shared.
+.pi-webui-state.json
+
+# Local agent notes and scratch logs. These often reference machine-local paths.
+AGENTS.md
+AGENTS.MD
+CLAUDE.md
+CLAUDE.MD
+.claude/
+.dev-log/
+.devlog/
+devlog/
+
+# Windows null-device typos can become real files under POSIX-like shells.
+**/nul
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local knowledge vaults or copied research notes must never be published.
+.wiki/
+**/Agent-Platform-Vault/
