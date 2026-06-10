@@ -188,10 +188,11 @@ export class RuntimeManager {
     return result.selectedText;
   }
 
-  async navigateTree(targetId: string, summarize = false): Promise<void> {
-    await this.session.navigateTree(targetId, { summarize });
+  async navigateTree(targetId: string, summarize = false): Promise<string | undefined> {
+    const result = await this.session.navigateTree(targetId, { summarize });
     // navigateTree stays in the same file (no runtime swap), so push a snapshot.
     this.onSessionReplaced(this.snapshot());
+    return result.editorText;
   }
 
   // ---- model / thinking ----
@@ -288,14 +289,20 @@ export class RuntimeManager {
     const sm = this.session.sessionManager;
     const activeIds = new Set(sm.getBranch().map((e) => e.id));
     const raw = sm.getTree() as unknown[];
-    const toNode = (n: any): TreeNode => ({
-      id: n.id,
-      parentId: n.parentId ?? null,
-      type: n.type ?? "entry",
-      label: labelForEntry(n),
-      onActiveBranch: activeIds.has(n.id),
-      children: Array.isArray(n.children) ? n.children.map(toNode) : [],
-    });
+    const toNode = (n: any): TreeNode => {
+      const entry = n.entry ?? n;
+      return {
+        id: entry.id,
+        parentId: entry.parentId ?? null,
+        type: entry.type ?? "entry",
+        label: labelForEntry(entry, n.label),
+        preview: previewForEntry(entry),
+        body: bodyForEntry(entry),
+        timestamp: timestampForEntry(entry),
+        onActiveBranch: activeIds.has(entry.id),
+        children: Array.isArray(n.children) ? n.children.map(toNode) : [],
+      };
+    };
     return raw.map(toNode);
   }
 }
@@ -314,11 +321,14 @@ function getSupportedThinkingLevelsFromModel(model: SessionModel): string[] {
   });
 }
 
-function labelForEntry(n: any): string {
+function labelForEntry(n: any, label?: string): string {
+  if (label) return label;
   switch (n.type) {
     case "message": {
       const role = n.message?.role ?? n.role ?? "message";
-      return role;
+      if (role === "toolResult") return n.message?.toolName ? `tool: ${n.message.toolName}` : "tool";
+      if (role === "bashExecution") return "tool: bash";
+      return String(role);
     }
     case "compaction":
       return "compaction summary";
@@ -329,4 +339,75 @@ function labelForEntry(n: any): string {
     default:
       return n.type ?? "entry";
   }
+}
+
+function previewForEntry(n: any): string {
+  return truncate(bodyForEntry(n), 500);
+}
+
+function bodyForEntry(n: any): string {
+  if (n.type === "message") {
+    const msg = n.message ?? {};
+    switch (msg.role) {
+      case "user":
+        return contentToText(msg.content);
+      case "assistant":
+        return contentToText(msg.content);
+      case "toolResult": {
+        const name = typeof msg.toolName === "string" ? msg.toolName : "tool";
+        return `${name} -> ${contentToText(msg.content)}`;
+      }
+      case "bashExecution": {
+        const command = String(msg.command ?? "");
+        const output = String(msg.output ?? "");
+        const exit = msg.exitCode == null ? "" : `\n(exit ${msg.exitCode})`;
+        return `$ ${command}\n${output}${exit}`;
+      }
+      default:
+        return contentToText(msg.content);
+    }
+  }
+  if (n.type === "branch_summary") return String(n.summary ?? "");
+  if (n.type === "compaction") return String(n.summary ?? "");
+  if (n.type === "model_change") return `${n.provider ?? "model"} / ${n.modelId ?? ""}`.trim();
+  if (n.type === "thinking_level_change") return String(n.thinkingLevel ?? "");
+  return n.type ? String(n.type) : "entry";
+}
+
+function timestampForEntry(n: any): string | undefined {
+  const value = n.timestamp;
+  if (typeof value === "string") return value;
+  if (typeof value === "number") return new Date(value).toISOString();
+  return undefined;
+}
+
+function contentToText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const block of content as Array<Record<string, unknown>>) {
+    if (block.type === "text" && typeof block.text === "string") parts.push(block.text);
+    else if (block.type === "thinking" && typeof block.thinking === "string") parts.push(block.thinking);
+    else if (block.type === "toolCall") {
+      const name = typeof block.name === "string" ? block.name : "tool";
+      parts.push(`${name}(${safeJson(block.arguments)})`);
+    } else if (block.type === "image") {
+      parts.push("[image]");
+    }
+  }
+  return parts.join("");
+}
+
+function safeJson(value: unknown): string {
+  if (value == null) return "";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "";
+  }
+}
+
+function truncate(value: string, max: number): string {
+  const text = value.trim();
+  return text.length > max ? `${text.slice(0, max)}...` : text;
 }

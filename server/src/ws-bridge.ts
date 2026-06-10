@@ -149,7 +149,10 @@ export class WsBridge {
       }
       case "navigate_tree": {
         const rt = await this.mgr.ensureRuntime(wid);
-        await rt.navigateTree(msg.targetId, msg.summarize);
+        const editorText = await rt.navigateTree(msg.targetId, msg.summarize);
+        if (editorText && rt.id) {
+          this.broadcast({ type: "composer_prefill", workspaceId: rt.id, text: editorText });
+        }
         break;
       }
       case "get_state": {

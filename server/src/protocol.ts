@@ -48,6 +48,12 @@ export interface TreeNode {
   type: string;
   /** Short human label for the entry (role, summary marker, etc.). */
   label: string;
+  /** Human-readable preview for node navigation. */
+  preview: string;
+  /** Full human-readable node body for expanded preview. */
+  body: string;
+  /** Entry timestamp in ISO format when available. */
+  timestamp?: string;
   /** True if this node is on the current active branch (leaf → root). */
   onActiveBranch: boolean;
   children: TreeNode[];
@@ -192,4 +198,6 @@ export type ServerMessage =
   | { type: "session_replaced"; state: SessionState }
   /** Pi-native user-message fork selected text for pre-filling the composer. */
   | { type: "fork_prefill"; workspaceId: string; text: string }
+  /** Pi-native tree navigation editor text for pre-filling the composer. */
+  | { type: "composer_prefill"; workspaceId: string; text: string }
   | { type: "error"; message: string };
