@@ -4,6 +4,7 @@ import remarkGemoji from "remark-gemoji";
 import remarkGfm from "remark-gfm";
 
 import type {
+  ClientMessage,
   ModelInfo,
   PromptAttachment,
   ServerMessage,
@@ -14,6 +15,7 @@ import type {
 } from "@protocol";
 
 import { api } from "./api.ts";
+import { I18nProvider, type Lang, LANG_STORE, loadLang, STRINGS, type Strings, useT } from "./i18n.tsx";
 import { applyEvent, newCursor } from "./transcript.ts";
 import { usePiSocket } from "./usePiSocket.ts";
 
@@ -106,6 +108,7 @@ export function App() {
   const [items, setItems] = useState<TranscriptItem[]>([]);
   const [input, setInput] = useState("");
   const [theme, setTheme] = useState<Theme>(loadTheme);
+  const [lang, setLang] = useState<Lang>(loadLang);
   const [hiddenActivity, setHiddenActivity] = useState<Set<ActivityType>>(loadHidden);
   const [collapsedLogs, setCollapsedLogs] = useState<Set<ActivityType>>(loadCollapsed);
   const [pinnedSessions, setPinnedSessions] = useState<Set<string>>(loadPinnedSessions);
@@ -126,6 +129,17 @@ export function App() {
       // ignore
     }
   }, [theme]);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("lang", lang === "zh" ? "zh-CN" : "en");
+    try {
+      localStorage.setItem(LANG_STORE, lang);
+    } catch {
+      // ignore
+    }
+  }, [lang]);
+
+  const t = STRINGS[lang];
 
   useEffect(() => {
     try {
@@ -272,7 +286,7 @@ export function App() {
       const item: TranscriptItem = {
         id: crypto.randomUUID(),
         kind: "divider",
-        text: "中断执行",
+        text: t.abortExecution,
       };
       abortDividerRef.current = {
         workspaceId: activeWsRef.current,
@@ -284,7 +298,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [send, state?.isStreaming, state?.sessionId]);
+  }, [send, state?.isStreaming, state?.sessionId, t.abortExecution]);
 
   useEffect(() => {
     if (!state?.model) return;
@@ -308,9 +322,9 @@ export function App() {
       activeSession?.name ??
       (key ? sessionNames[key] : undefined) ??
       activeSession?.firstMessage ??
-      "Conversation"
+      t.defaultConversation
     );
-  }, [activeSession, sessionNames, state]);
+  }, [activeSession, sessionNames, state, t.defaultConversation]);
 
   const currentModel = useMemo(
     () => resolveCurrentModel(models, state?.model, activeWorkspace?.defaultModel, storedModel),
@@ -348,6 +362,7 @@ export function App() {
     () => sessionTree.filter((node) => !pinnedSessions.has(node.session.path)),
     [pinnedSessions, sessionTree],
   );
+  const runtimeBusy = isRuntimeBusy(state);
 
   const submit = useCallback((text = input, attachments: PromptAttachment[] = []) => {
     const trimmed = text.trim();
@@ -405,12 +420,12 @@ export function App() {
   }, [activeWs, send]);
 
   const handleCloneSession = useCallback((sessionPath: string) => {
-    if (!activeWs) return;
+    if (!activeWs || isRuntimeBusy(state)) return;
     send({ type: "clone_session", workspaceId: activeWs, sessionPath });
     window.setTimeout(() => {
       void api.sessions(activeWs).then(setSessions).catch(() => {});
     }, 120);
-  }, [activeWs, send]);
+  }, [activeWs, send, state]);
 
   const handleCompact = useCallback(() => {
     if (!activeWs || state?.isCompacting) return;
@@ -418,8 +433,9 @@ export function App() {
   }, [activeWs, send, state?.isCompacting]);
 
   return (
+    <I18nProvider value={t}>
     <div className="app">
-      <Topbar state={state} status={status} theme={theme} onThemeChange={setTheme} />
+      <Topbar state={state} status={status} theme={theme} onThemeChange={setTheme} lang={lang} onLangChange={setLang} />
 
       <div className="main">
         <SessionColumn
@@ -428,7 +444,7 @@ export function App() {
           pinnedSessions={pinnedSessions}
           expandedGroups={expandedGroups}
           activeSessionId={state?.sessionId}
-          activeSessionStreaming={state?.isStreaming === true}
+          runtimeBusy={runtimeBusy}
           onNewSession={() => activeWs && send({ type: "new_session", workspaceId: activeWs })}
           onSelect={(path) =>
             activeWs && send({ type: "switch_session", sessionPath: path, workspaceId: activeWs })}
@@ -467,7 +483,8 @@ export function App() {
           onCompact={handleCompact}
           onRenameSession={handleRenameSession}
           onForkMessage={(entryId, position) =>
-            activeWs && send({ type: "fork", entryId, position, workspaceId: activeWs })}
+            activeWs && !runtimeBusy && send({ type: "fork", entryId, position, workspaceId: activeWs })}
+          forkDisabled={runtimeBusy}
         />
 
         <ActivityColumn
@@ -498,9 +515,10 @@ export function App() {
           send({ type: "switch_workspace", workspaceId: id });
         }}
         onClose={(id) => send({ type: "close_workspace", workspaceId: id })}
-        onOpen={() => send({ type: "open_workspace_picker" })}
+        onOpen={() => openWorkspaceByPath(send, t)}
       />
     </div>
+    </I18nProvider>
   );
 }
 
@@ -509,33 +527,46 @@ function Topbar({
   status,
   theme,
   onThemeChange,
+  lang,
+  onLangChange,
 }: {
   state: SessionState | null;
   status: string;
   theme: Theme;
   onThemeChange: (theme: Theme) => void;
+  lang: Lang;
+  onLangChange: (lang: Lang) => void;
 }) {
-  const ws = state?.cwd ? shortPath(state.cwd) : "—";
+  const t = useT();
+  const ws = state?.cwd ?? "—";
   return (
     <header className="topbar">
       <div className="brand">
         <span className="dot" />
         <b>pi</b>
-        <span className="ws mono">workspace · {ws}</span>
+        <span className="ws mono" title={ws}>{t.workspaceLabel} · {ws}</span>
       </div>
       <span className="spacer" />
-      {state && <span className="topcost mono">${state.stats.cost.toFixed(4)}</span>}
       <span className={`pill ${status === "open" ? "ok" : ""}`}>
-        {status === "open" ? "connected · localhost" : status}
+        {status === "open" ? t.connected : status}
       </span>
-      <div className="theme-toggle" role="group" aria-label="主题切换">
-        <button type="button" aria-pressed={theme === "light"} aria-label="浅色主题" onClick={() => onThemeChange("light")}>
-          <SunIcon />
+      <div className="theme-toggle" role="group" aria-label={t.langToggle}>
+        <button type="button" aria-pressed={lang === "zh"} aria-label={t.langZh} onClick={() => onLangChange("zh")}>
+          {t.langZh}
         </button>
-        <button type="button" aria-pressed={theme === "dark"} aria-label="深色主题" onClick={() => onThemeChange("dark")}>
-          <MoonIcon />
+        <button type="button" aria-pressed={lang === "en"} aria-label={t.langEn} onClick={() => onLangChange("en")}>
+          {t.langEn}
         </button>
       </div>
+      <button
+        type="button"
+        className="theme-icon-btn"
+        aria-label={t.themeToggle}
+        title={theme === "dark" ? t.lightTheme : t.darkTheme}
+        onClick={() => onThemeChange(theme === "dark" ? "light" : "dark")}
+      >
+        {theme === "dark" ? <SunIcon /> : <MoonIcon />}
+      </button>
     </header>
   );
 }
@@ -546,7 +577,7 @@ function SessionColumn({
   pinnedSessions,
   expandedGroups,
   activeSessionId,
-  activeSessionStreaming,
+  runtimeBusy,
   onNewSession,
   onSelect,
   onTogglePin,
@@ -559,7 +590,7 @@ function SessionColumn({
   pinnedSessions: Set<string>;
   expandedGroups: Set<string>;
   activeSessionId?: string;
-  activeSessionStreaming: boolean;
+  runtimeBusy: boolean;
   onNewSession: () => void;
   onSelect: (path: string) => void;
   onTogglePin: (rootPath: string) => void;
@@ -567,24 +598,25 @@ function SessionColumn({
   onClone: (sessionPath: string) => void;
   onDeleteSessions: (paths: string[]) => void;
 }) {
+  const t = useT();
   const count = groups.length + pinnedGroups.length;
 
   return (
     <section className="col col-sessions">
       <div className="col-head">
-        <h2>Sessions</h2>
+        <h2>{t.sessions}</h2>
         <span className="count">{count}</span>
         <span className="spacer" />
       </div>
 
       <div className="col-scroll">
-        {count === 0 && <div className="empty">还没有会话</div>}
+        {count === 0 && <div className="empty">{t.noSessions}</div>}
 
         {pinnedGroups.length > 0 && (
           <>
             <div className="region-label">
               <span className="ico"><PinIcon /></span>
-              <span>Pinned</span>
+              <span>{t.pinned}</span>
             </div>
             <div id="pin-region">
               {pinnedGroups.map((node) => (
@@ -594,7 +626,7 @@ function SessionColumn({
                   pinned
                   expanded={isGroupExpanded(node, expandedGroups, activeSessionId)}
                   activeSessionId={activeSessionId}
-                  activeSessionStreaming={activeSessionStreaming}
+                  runtimeBusy={runtimeBusy}
                   onSelect={onSelect}
                   onTogglePin={onTogglePin}
                   onToggleExpanded={onToggleExpanded}
@@ -603,7 +635,7 @@ function SessionColumn({
                 />
               ))}
             </div>
-            <div className="pin-divider"><span>其余会话</span></div>
+            <div className="pin-divider"><span>{t.otherSessions}</span></div>
           </>
         )}
 
@@ -615,7 +647,7 @@ function SessionColumn({
               pinned={pinnedSessions.has(node.session.path)}
               expanded={isGroupExpanded(node, expandedGroups, activeSessionId)}
               activeSessionId={activeSessionId}
-              activeSessionStreaming={activeSessionStreaming}
+              runtimeBusy={runtimeBusy}
               onSelect={onSelect}
               onTogglePin={onTogglePin}
               onToggleExpanded={onToggleExpanded}
@@ -626,9 +658,9 @@ function SessionColumn({
         </div>
       </div>
       <div className="session-foot">
-        <button className="new-session-btn" type="button" onClick={onNewSession} title="新建会话">
+        <button className="new-session-btn" type="button" onClick={onNewSession} title={t.newSessionTitle}>
           <PlusIcon />
-          <span>新会话</span>
+          <span>{t.newSession}</span>
         </button>
       </div>
     </section>
@@ -640,7 +672,7 @@ function SessionGroup({
   pinned,
   expanded,
   activeSessionId,
-  activeSessionStreaming,
+  runtimeBusy,
   onSelect,
   onTogglePin,
   onToggleExpanded,
@@ -651,20 +683,21 @@ function SessionGroup({
   pinned: boolean;
   expanded: boolean;
   activeSessionId?: string;
-  activeSessionStreaming: boolean;
+  runtimeBusy: boolean;
   onSelect: (path: string) => void;
   onTogglePin: (rootPath: string) => void;
   onToggleExpanded: (rootPath: string) => void;
   onClone: (sessionPath: string) => void;
   onDeleteSessions: (paths: string[]) => void;
 }) {
+  const t = useT();
   const descendants = useMemo(() => flattenForkRows(node), [node]);
   const descendantPaths = useMemo(() => collectDescendantPaths(node), [node]);
   const hasForks = descendants.length > 0;
   const rootActive = node.session.id === activeSessionId;
   const activeChild = descendants.some((row) => row.session.id === activeSessionId);
   const deleteDisabled = rootActive || activeChild;
-  const cloneDisabled = rootActive && activeSessionStreaming;
+  const cloneDisabled = runtimeBusy;
 
   return (
     <div className={`session-group ${expanded ? "expanded" : ""}`}>
@@ -677,12 +710,12 @@ function SessionGroup({
           <span className="tagdot" />
           <span className="session-name">{displaySessionLabel(node.session)}</span>
           <span className="spacer" />
-          <span className="ts-inline mono">{relTime(node.session.modified)}</span>
+          <span className="ts-inline mono">{relTime(node.session.modified, t)}</span>
           <div className="acts">
             <ActionButton
               className="clone-btn"
-              title={cloneDisabled ? "运行中的当前会话不能克隆" : "克隆当前路径为独立主会话"}
-              label="克隆会话"
+              title={cloneDisabled ? t.cloneDisabledStreaming : t.cloneToMain}
+              label={t.cloneSession}
               disabled={cloneDisabled}
               onClick={() => onClone(node.session.path)}
             >
@@ -690,16 +723,16 @@ function SessionGroup({
             </ActionButton>
             <ActionButton
               className="pin-btn"
-              title={pinned ? "取消置顶" : "置顶会话"}
-              label={pinned ? "取消置顶" : "置顶会话"}
+              title={pinned ? t.unpin : t.pin}
+              label={pinned ? t.unpin : t.pin}
               onClick={() => onTogglePin(node.session.path)}
             >
               <PinIcon />
             </ActionButton>
             <ActionButton
               className="del-btn"
-              title={deleteDisabled ? "不能删除当前活动会话" : "删除会话"}
-              label="删除会话"
+              title={deleteDisabled ? t.deleteDisabledActive : t.deleteSession}
+              label={t.deleteSession}
               disabled={deleteDisabled}
               onClick={() => onDeleteSessions([node.session.path, ...descendantPaths])}
             >
@@ -719,10 +752,10 @@ function SessionGroup({
             }}
           >
             <span className="tree-ico"><TreeIcon /></span>
-            <span className="fork-count-label">+{descendants.length} 分支</span>
+            <span className="fork-count-label">{t.forkCount(descendants.length)}</span>
             <span className="exp-spacer" />
             <span className="exp-toggle">
-              <span className="exp-word">{expanded ? "收起" : "展开"}</span>
+              <span className="exp-word">{expanded ? t.collapse : t.expand}</span>
               <ChevronIcon className="chev" />
             </span>
           </button>
@@ -742,21 +775,21 @@ function SessionGroup({
               >
                 <span className="rail mono">{row.rail} </span>
                 <span className="fork-title">{displaySessionLabel(row.session)}</span>
-                <span className="ts-inline mono">{relTime(row.session.modified)}</span>
+                <span className="ts-inline mono">{relTime(row.session.modified, t)}</span>
                 <div className="acts">
                   <ActionButton
                     className="clone-btn"
-                    title={active && activeSessionStreaming ? "运行中的当前会话不能克隆" : "克隆当前路径为独立主会话"}
-                    label="克隆为独立主会话"
-                    disabled={active && activeSessionStreaming}
+                    title={runtimeBusy ? t.cloneDisabledStreaming : t.cloneToMain}
+                    label={t.cloneToIndependent}
+                    disabled={runtimeBusy}
                     onClick={() => onClone(row.session.path)}
                   >
                     <CloneIcon />
                   </ActionButton>
                   <ActionButton
                     className="del-btn"
-                    title={active ? "不能删除当前活动会话" : "删除会话"}
-                    label="删除会话"
+                    title={active ? t.deleteDisabledActive : t.deleteSession}
+                    label={t.deleteSession}
                     disabled={active}
                     onClick={() => onDeleteSessions([row.session.path])}
                   >
@@ -823,6 +856,7 @@ function ChatColumn({
   onCompact,
   onRenameSession,
   onForkMessage,
+  forkDisabled,
 }: {
   state: SessionState | null;
   items: TranscriptItem[];
@@ -841,7 +875,9 @@ function ChatColumn({
   onCompact: () => void;
   onRenameSession: (nextName: string) => void;
   onForkMessage: (entryId: string, position: "before" | "at") => void;
+  forkDisabled: boolean;
 }) {
+  const t = useT();
   const scrollRef = useAutoScroll(items);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -868,13 +904,13 @@ function ChatColumn({
 
     try {
       const next = await readDroppedAttachments(event.dataTransfer, attachments);
-      if (next.rejectedDirectories > 0) showDropNotice("不支持拖入文件夹");
-      if (next.rejectedLarge > 0) showDropNotice(`已忽略超过 ${formatBytes(MAX_ATTACHMENT_BYTES)} 的文件`);
+      if (next.rejectedDirectories > 0) showDropNotice(t.noFolders);
+      if (next.rejectedLarge > 0) showDropNotice(t.ignoredLarge(formatBytes(MAX_ATTACHMENT_BYTES)));
       if (next.attachments.length > attachments.length) setAttachments(next.attachments);
     } catch (error) {
-      showDropNotice(error instanceof Error ? error.message : "读取拖入文件失败");
+      showDropNotice(error instanceof Error ? error.message : t.readDropFailed);
     }
-  }, [attachments, showDropNotice]);
+  }, [attachments, showDropNotice, t]);
 
   const submitCurrent = useCallback(() => {
     if (!input.trim() && attachments.length === 0) return;
@@ -895,12 +931,12 @@ function ChatColumn({
   const handleFiles = useCallback(async (files: FileList | File[]) => {
     try {
       const next = await readFileAttachments([...files], attachments);
-      if (next.rejectedLarge > 0) showDropNotice(`已忽略超过 ${formatBytes(MAX_ATTACHMENT_BYTES)} 的文件`);
+      if (next.rejectedLarge > 0) showDropNotice(t.ignoredLarge(formatBytes(MAX_ATTACHMENT_BYTES)));
       if (next.attachments.length > attachments.length) setAttachments(next.attachments);
     } catch (error) {
-      showDropNotice(error instanceof Error ? error.message : "读取文件失败");
+      showDropNotice(error instanceof Error ? error.message : t.readFileFailed);
     }
-  }, [attachments, showDropNotice]);
+  }, [attachments, showDropNotice, t]);
 
   return (
     <section className="col col-chat">
@@ -911,7 +947,7 @@ function ChatColumn({
       </div>
 
       <div className="chat-scroll" ref={scrollRef}>
-        {items.length === 0 && <div className="empty-chat"><p>给 pi 发条消息开始对话。</p></div>}
+        {items.length === 0 && <div className="empty-chat"><p>{t.startConversation}</p></div>}
         {items.map((item) =>
           item.kind === "divider" ? (
             <ChatDivider key={item.id} text={item.text} />
@@ -921,6 +957,7 @@ function ChatColumn({
               item={item}
               providerId={currentModel?.provider ?? state?.model?.provider ?? "local"}
               onForkMessage={onForkMessage}
+              forkDisabled={forkDisabled}
             />
           ),
         )}
@@ -938,9 +975,9 @@ function ChatColumn({
           </div>
           <div className="composer-status">
             {state?.isStreaming && (
-              <button className="abort-chip" type="button" onClick={onAbort} title="停止当前执行">
+              <button className="abort-chip" type="button" onClick={onAbort} title={t.stopExecution}>
                 <StopIcon />
-                <span>停止</span>
+                <span>{t.stop}</span>
               </button>
             )}
             <ContextMeter state={state} onCompact={onCompact} />
@@ -968,12 +1005,12 @@ function ChatColumn({
         >
           {dragActive && (
             <div className="drop-overlay">
-              <strong>释放以附加文件</strong>
-              <span>支持文本与图片，文件夹会被忽略</span>
+              <strong>{t.dropToAttach}</strong>
+              <span>{t.dropHint}</span>
             </div>
           )}
           {attachments.length > 0 && (
-            <div className="attach-tray" aria-label="已附加文件">
+            <div className="attach-tray" aria-label={t.attachedFiles}>
               {attachments.map((attachment) => (
                 <span className="file-card" key={attachment.id} title={`${attachment.name} · ${formatBytes(attachment.size)}`}>
                   <span className={`fc-ico ${attachment.type}`}><FileIcon /></span>
@@ -984,8 +1021,8 @@ function ChatColumn({
                   <button
                     type="button"
                     className="fc-x"
-                    aria-label={`移除 ${attachment.name}`}
-                    title="移除附件"
+                    aria-label={t.removeFile(attachment.name)}
+                    title={t.removeAttachment}
                     onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}
                   >
                     ×
@@ -998,8 +1035,8 @@ function ChatColumn({
             <button
               type="button"
               className="attach-btn"
-              aria-label="附加文件"
-              title="附加文件"
+              aria-label={t.attachFile}
+              title={t.attachFile}
               onClick={() => fileInputRef.current?.click()}
             >
               <PaperclipIcon />
@@ -1019,22 +1056,19 @@ function ChatColumn({
               ref={textareaRef}
               value={input}
               rows={1}
-              placeholder={
-                state?.isStreaming
-                  ? "当前处理中，Enter 加入 steer 队列，Shift+Enter 换行"
-                  : "Enter 发送，Shift+Enter 换行，/ 唤起命令"
-              }
+              placeholder={state?.isStreaming ? t.placeholderStreaming : t.placeholderIdle}
               onChange={(e) => {
                 setInput(e.target.value);
               }}
               onKeyDown={(e) => {
+                if (isComposingKeyEvent(e.nativeEvent)) return;
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
                   submitCurrent();
                 }
               }}
             />
-            <button className="send" onClick={submitCurrent} aria-label="发送" title={state?.isStreaming ? "加入 steer 队列" : "发送"}>
+            <button className="send" onClick={submitCurrent} aria-label={t.sendAria} title={state?.isStreaming ? t.joinSteerQueue : t.send}>
               <SendIcon />
             </button>
           </div>
@@ -1052,16 +1086,17 @@ function SteeringDock({
   messages: string[];
   onClearToComposer: () => void;
 }) {
+  const t = useT();
   if (messages.length === 0) return null;
   return (
-    <div className="steering-dock has-items" aria-label="待送入消息队列">
+    <div className="steering-dock has-items" aria-label={t.steerQueueAria}>
       <div className="steering-label">
         <span className="steering-title">
           <span className="pulse" />
-          <span className="mono">待送入 · Pi 原生队列逐条投递</span>
+          <span className="mono">{t.steerQueueLabel}</span>
         </span>
-        <button className="queue-clear" type="button" onClick={onClearToComposer} title="全部取消并回填到编辑框">
-          全部取消
+        <button className="queue-clear" type="button" onClick={onClearToComposer} title={t.clearAllToComposer}>
+          {t.clearAll}
         </button>
       </div>
       <div className="steering-stack">
@@ -1095,6 +1130,7 @@ function SessionNameEditor({
   value: string;
   onSubmit: (nextName: string) => void;
 }) {
+  const t = useT();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value.slice(0, 40));
 
@@ -1140,8 +1176,8 @@ function SessionNameEditor({
       <button
         type="button"
         className="edit-btn"
-        aria-label="编辑会话标题"
-        title="编辑会话标题"
+        aria-label={t.editSessionTitle}
+        title={t.editSessionTitle}
         onClick={() => setEditing(true)}
       >
         <EditIcon />
@@ -1154,19 +1190,24 @@ function MessageBubble({
   item,
   providerId,
   onForkMessage,
+  forkDisabled,
 }: {
   item: TranscriptItem;
   providerId: string;
   onForkMessage: (entryId: string, position: "before" | "at") => void;
+  forkDisabled: boolean;
 }) {
+  const t = useT();
   const [copied, setCopied] = useState(false);
   const isUser = item.kind === "user";
   const forkPosition = isUser ? "before" : "at";
-  const forkTitle = item.sourceEntryId
-    ? isUser
-      ? "Fork 并重写这条消息"
-      : "Fork 到这条回复"
-    : "当前消息尚不可 fork";
+  const forkTitle = forkDisabled
+    ? t.forkDisabledBusy
+    : item.sourceEntryId
+      ? isUser
+      ? t.forkRewrite
+      : t.forkToReply
+      : t.forkUnavailable;
 
   const copyText = useCallback(async () => {
     await navigator.clipboard.writeText(item.text);
@@ -1194,8 +1235,8 @@ function MessageBubble({
           <button
             type="button"
             className={`msg-act ${copied ? "copied" : ""}`}
-            aria-label="复制消息"
-            title="复制消息"
+            aria-label={t.copyMessage}
+            title={t.copyMessage}
             onClick={() => void copyText()}
           >
             {copied ? <CheckIcon /> : <CopyIcon />}
@@ -1203,10 +1244,10 @@ function MessageBubble({
           <button
             type="button"
             className="msg-act"
-            aria-label="Fork 会话"
+            aria-label={t.forkSession}
             title={forkTitle}
-            disabled={!item.sourceEntryId}
-            onClick={() => item.sourceEntryId && onForkMessage(item.sourceEntryId, forkPosition)}
+            disabled={!item.sourceEntryId || forkDisabled}
+            onClick={() => item.sourceEntryId && !forkDisabled && onForkMessage(item.sourceEntryId, forkPosition)}
           >
             <ForkIcon />
           </button>
@@ -1241,6 +1282,7 @@ function ModelPicker({
   models: ModelInfo[];
   onSetModel: (provider: string, modelId: string) => void;
 }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -1284,12 +1326,12 @@ function ModelPicker({
           data-prov={currentModel?.provider ?? "local"}
           dangerouslySetInnerHTML={{ __html: providerIcon(currentModel?.provider ?? "local") }}
         />
-        <span className="model-name">{currentModel?.name ?? "(no model)"}</span>
+        <span className="model-name">{currentModel?.name ?? t.noModel}</span>
         <span className="caret"><CaretIcon /></span>
       </button>
 
       <div className="model-menu" role="listbox">
-        {groups.length === 0 && <div className="menu-empty">没有已配置的模型</div>}
+        {groups.length === 0 && <div className="menu-empty">{t.noConfiguredModels}</div>}
         {groups.map(([provider, list]) => (
           <div key={provider}>
             <div className="grp-label">
@@ -1337,10 +1379,11 @@ function ThinkingLevelTabs({
   options: string[];
   onSetLevel: (level: string) => void;
 }) {
+  const t = useT();
   const normalized = useMemo(() => normalizeThinkingOptions(options), [options]);
   if (normalized.length <= 1) return null;
   return (
-    <div className="effort-tabs" role="radiogroup" aria-label="推理强度">
+    <div className="effort-tabs" role="radiogroup" aria-label={t.thinkingStrength}>
       {normalized.map((option) => (
         <button
           key={option.id}
@@ -1348,7 +1391,7 @@ function ThinkingLevelTabs({
           className="effort-tab"
           role="radio"
           aria-checked={option.id === currentLevel}
-          title={`推理强度：${option.label}`}
+          title={t.thinkingStrengthTitle(option.label)}
           onClick={() => onSetLevel(option.id)}
         >
           {option.label}
@@ -1365,6 +1408,7 @@ function ContextMeter({
   state: SessionState | null;
   onCompact: () => void;
 }) {
+  const t = useT();
   const usage = state?.contextUsage;
   const pct = usage?.percent == null ? 0 : Math.min(100, Math.round(usage.percent));
   const meterClass = pct >= 85 ? "high" : pct >= 60 ? "warn" : "";
@@ -1373,7 +1417,7 @@ function ContextMeter({
     : "—";
 
   return (
-    <div className={`ctx-meter ${meterClass}`} title="当前会话上下文占用">
+    <div className={`ctx-meter ${meterClass}`} title={t.contextUsage}>
       <span className="label mono">{label}</span>
       <span className="bar"><span className="fill" style={{ width: `${pct}%` }} /></span>
       <button
@@ -1381,11 +1425,11 @@ function ContextMeter({
         className={`ctx-compress ${state?.isCompacting ? "busy" : ""}`}
         onClick={onCompact}
         disabled={!state || state.isCompacting}
-        title="压缩上下文 (/compact)"
-        aria-label="压缩上下文"
+        title={t.compactTitle}
+        aria-label={t.compactAria}
       >
         <CompressIcon />
-        <span>压缩</span>
+        <span>{t.compact}</span>
       </button>
     </div>
   );
@@ -1406,15 +1450,16 @@ function ActivityColumn({
   onToggleCollapse: (type: ActivityType) => void;
   onClear: () => void;
 }) {
+  const t = useT();
   const visible = items.filter((item) => !hidden.has(resolveActivityType(item)));
   const scrollRef = useAutoScroll(visible);
 
   return (
     <section className="col col-logs">
       <div className="col-head">
-        <h2>Activity</h2>
+        <h2>{t.activity}</h2>
         <span className="spacer" />
-        <button className="ghost-btn" onClick={onClear}>清空</button>
+        <button className="ghost-btn" onClick={onClear}>{t.clear}</button>
       </div>
 
       <div className="log-filters">
@@ -1427,13 +1472,13 @@ function ActivityColumn({
             onClick={() => onToggle(type)}
           >
             <span className="swatch" data-type={type} />
-            {type === "tool" ? "tool call" : type}
+            {t.activityLabels[type]}
           </span>
         ))}
       </div>
 
       <div className="col-scroll" ref={scrollRef}>
-        {visible.length === 0 && <div className="empty">暂无推理 / 执行日志</div>}
+        {visible.length === 0 && <div className="empty">{t.noActivity}</div>}
         {visible.map((item) => {
           const type = resolveActivityType(item);
           const collapsed = collapsedLogs.has(type);
@@ -1441,7 +1486,7 @@ function ActivityColumn({
             <div key={item.id} className={`log ${collapsed ? "collapsed" : ""}`} data-type={type}>
               <div className="head" onClick={() => onToggleCollapse(type)}>
                 <span className="badge" />
-                <span className="title mono">{activityLabel(type)}</span>
+                <span className="title mono">{`{${t.activityLabels[type]}}`}</span>
               </div>
               {!collapsed && <div className="body mono">{item.text}</div>}
             </div>
@@ -1465,9 +1510,10 @@ function TabBar({
   onClose: (id: string) => void;
   onOpen: () => void;
 }) {
+  const t = useT();
   return (
     <nav className="tabbar">
-      <button className="tab-add" onClick={onOpen} title="打开 workspace">+</button>
+      <button className="tab-add" onClick={onOpen} title={t.openWorkspace}>+</button>
       <div className="tab-track">
         {workspaces.map((workspace) => (
           <div
@@ -1483,7 +1529,7 @@ function TabBar({
             </span>
             <button
               className="x"
-              aria-label="关闭"
+              aria-label={t.close}
               onClick={(e) => {
                 e.stopPropagation();
                 onClose(workspace.id);
@@ -1582,6 +1628,11 @@ function resolveCurrentModel(
     if (match) return match;
   }
   return models[0] ?? null;
+}
+
+function openWorkspaceByPath(send: (msg: ClientMessage) => void, t: Strings): void {
+  const path = window.prompt(t.openWorkspaceByPathPrompt);
+  if (path && path.trim()) send({ type: "open_workspace", path: path.trim() });
 }
 
 function resolveThinkingOptions(
@@ -1709,23 +1760,17 @@ function resolveActivityType(item: TranscriptItem): ActivityType {
     (item.kind === "reasoning" ? "reasoning" : item.kind === "system" ? "system" : "tool")) as ActivityType;
 }
 
-function activityLabel(type: ActivityType): string {
-  switch (type) {
-    case "reasoning":
-      return "{reasoning}";
-    case "tool":
-      return "{tool call}";
-    case "shell":
-      return "{shell / exec}";
-    case "file":
-      return "{file}";
-    case "network":
-      return "{network}";
-    case "system":
-      return "{system}";
-    case "error":
-      return "{error}";
-  }
+function isRuntimeBusy(state: SessionState | null): boolean {
+  return Boolean(
+    state?.isStreaming ||
+      state?.isCompacting ||
+      state?.steeringMessages.length ||
+      state?.followUpMessages.length,
+  );
+}
+
+function isComposingKeyEvent(event: KeyboardEvent): boolean {
+  return event.isComposing || event.keyCode === 229;
 }
 
 async function readDroppedAttachments(
@@ -1871,20 +1916,15 @@ function providerIcon(id: string): string {
   return `<svg viewBox="0 0 24 24"><text x="12" y="12" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="700" font-family="system-ui,sans-serif" fill="currentColor">${letter}</text></svg>`;
 }
 
-function shortPath(path: string): string {
-  const parts = path.replace(/\\/g, "/").split("/").filter(Boolean);
-  return parts.length <= 2 ? path : `…/${parts.slice(-2).join("/")}`;
-}
-
-function relTime(iso: string): string {
+function relTime(iso: string, t: Strings): string {
   const diff = Date.now() - new Date(iso).getTime();
   const min = Math.floor(diff / 60000);
-  if (min < 1) return "现在";
-  if (min < 60) return `${min} 分钟前`;
+  if (min < 1) return t.now;
+  if (min < 60) return t.minutesAgo(min);
   const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr} 小时前`;
+  if (hr < 24) return t.hoursAgo(hr);
   const day = Math.floor(hr / 24);
-  if (day < 7) return `${day} 天前`;
+  if (day < 7) return t.daysAgo(day);
   return new Date(iso).toLocaleDateString();
 }
 

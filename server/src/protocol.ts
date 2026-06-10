@@ -175,7 +175,6 @@ export type ClientMessage =
   | ({ type: "navigate_tree"; targetId: string; summarize?: boolean } & WorkspaceScoped)
   // workspace lifecycle
   | { type: "open_workspace"; path: string }
-  | { type: "open_workspace_picker" }
   | { type: "close_workspace"; workspaceId: string }
   | { type: "switch_workspace"; workspaceId: string }
   | { type: "get_state" };

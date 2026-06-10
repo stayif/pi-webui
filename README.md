@@ -4,25 +4,45 @@ pi-webui 是一个本地轻量级 WebUI，用来驱动 [Pi Agent](https://github
 
 当前版本定位为 `v0.1`：面向本机使用，优先保证独立运行、会话管理和日常交互顺手。
 
+核心原则是**非侵入**：pi-webui 只是 Pi 的本机 UI 宿主，不接管你的项目、不迁移 session、不复制 workspace、不写入 Pi 的 provider 密钥，也不把你的代码或会话同步到任何远端服务。
+
 ## 预览
 
-![pi-webui light theme](docs/images/preview_light.jpg)
-
-![pi-webui dark theme](docs/images/preview_dark.jpg)
+![pi-webui light theme](docs/images/preview_light.png)
 
 ## 功能
 
 - 多 workspace 标签：每个 workspace 绑定一个独立的 Pi runtime。
 - Session 列表、切换、新建、删除、重命名、fork、克隆为独立主会话。
-- 聊天流式输出，支持 `Esc` 中断当前运行。
+- 聊天流式输出，支持 `Esc` 中断当前运行；输入法选字阶段按 `Enter` 不会误发送。
 - 用户消息和 agent 消息都支持复制与 fork。
-- 模型和 Thinking level 下拉切换，直接调用 Pi runtime。
-- 右侧日志面板展示 reasoning、tool、shell、file、network、system、error。
-- 主题切换：明亮 / 暗黑。
+- 模型和 Thinking level 切换，直接调用 Pi runtime。
+- 右侧日志面板展示 reasoning、tool、shell、file、network、system、error，并支持简体中文 / English 两套界面文案。
+- 主题切换：明亮 / 暗黑，顶部单按钮切换。
+
+## 非侵入设计
+
+- **不 fork Pi core**：依赖 `@earendil-works/pi-coding-agent` 的公开 SDK API，尽量保持与终端 Pi 的行为一致。
+- **不接管 workspace**：workspace 仍然是你本机原来的项目目录；pi-webui 只保存“打开过哪些目录”的 UI 标签状态。
+- **不迁移 session**：session 仍然读取 Pi 本地的 JSONL session 数据；列表、切换、fork、clone 都通过 Pi SDK / SessionManager 完成。
+- **不保存密钥**：provider 登录和 API key 继续走 Pi 自己的本机配置、`auth.json` 或环境变量；pi-webui 不把密钥写进 prompt、session 或自己的状态文件。
+- **不引入数据库**：当前版本没有 SQLite 或远端存储；UI 状态只写入项目根目录的 `.pi-webui-state.json`。
+- **不做远程服务**：默认只监听 `127.0.0.1`，面向本机浏览器使用。
+
+## Workspace 路径
+
+浏览器安全模型不会把目录选择器选中的本机绝对路径暴露给网页，所以当前版本仍通过输入绝对路径打开 workspace。左下角 `+` 会弹出路径输入框，并提示系统复制路径的方法：
+
+- macOS：在 Finder 中选中文件夹，按 `Option+Command+C` 复制路径。
+- Windows：在资源管理器中选中文件夹，`Shift+右键`，选择 `Copy as path`。
+
+这里输入路径只是告诉 Pi runtime 应该在哪个本机目录工作。pi-webui 不会复制、导入或迁移 workspace 目录内容。
 
 ## 安全边界
 
 pi-webui 只绑定 `127.0.0.1`，没有登录系统，也没有远程访问鉴权。它驱动的 Pi runtime 可以运行 shell、编辑文件、写入 workspace，因此不要把端口暴露到局域网或公网。
+
+后端会拒绝非 loopback `Host` 的 WebSocket 握手，并拒绝带有非 loopback `Origin` 的浏览器 WebSocket 请求，用来降低 cross-site WebSocket hijacking / DNS rebinding 风险。
 
 ## 环境要求
 

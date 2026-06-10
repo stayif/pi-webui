@@ -17,6 +17,48 @@ const PORT = Number(process.env.PI_WEBUI_PORT ?? process.env.PORT ?? 9529);
 const HOST = process.env.HOST ?? "127.0.0.1";
 
 /**
+ * Loopback binding stops other *machines*, but not other *origins in the user's
+ * own browser*. Any website the user visits can open a WebSocket to
+ * `ws://127.0.0.1:<port>/ws` (browsers allow cross-origin WS connections) and
+ * then drive the full command surface — open a workspace, prompt the agent,
+ * run bash. That's cross-site WebSocket hijacking / DNS rebinding, and the
+ * loopback bind does nothing against it.
+ *
+ * The guard: a real browser always stamps a forgeable-by-JS-proof `Origin` on
+ * the WS handshake, and same-origin requests from our own page carry a loopback
+ * origin. So we reject any handshake whose `Origin` is present and not loopback,
+ * and additionally require the `Host` header to be loopback (blocks DNS
+ * rebinding, where a rebound domain points at 127.0.0.1). Non-browser clients
+ * (curl, a CLI) send no `Origin` and are allowed — they're outside the browser
+ * threat model and can already talk to any local port.
+ */
+function isLoopbackHostname(hostname: string): boolean {
+  const h = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+  return h === "127.0.0.1" || h === "localhost" || h === "::1";
+}
+
+function isAllowedOrigin(origin: string): boolean {
+  try {
+    return isLoopbackHostname(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isLoopbackHost(host: string | undefined): boolean {
+  if (!host) return false;
+  let hostname = host;
+  if (host.startsWith("[")) {
+    const end = host.indexOf("]");
+    hostname = end === -1 ? host : host.slice(0, end + 1);
+  } else {
+    const colon = host.lastIndexOf(":");
+    if (colon !== -1) hostname = host.slice(0, colon);
+  }
+  return isLoopbackHostname(hostname);
+}
+
+/**
  * Where pi-webui persists its own state (open tabs).
  *
  * Deliberately project-local, NOT in `~/.pi`: pi-webui is an independent
@@ -47,6 +89,17 @@ async function main(): Promise<void> {
 
   app.get(
     "/ws",
+    (c, next) => {
+      // Reject cross-site WebSocket hijacking / DNS rebinding before upgrading.
+      const origin = c.req.header("origin");
+      if (origin && !isAllowedOrigin(origin)) {
+        return c.text("Forbidden origin", 403);
+      }
+      if (!isLoopbackHost(c.req.header("host"))) {
+        return c.text("Forbidden host", 403);
+      }
+      return next();
+    },
     upgradeWebSocket(() => ({
       onOpen: (_evt, ws) => bridge.add(ws),
       onMessage: (evt, ws) => {
