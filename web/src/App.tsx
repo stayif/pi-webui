@@ -1,4 +1,4 @@
-import { type DragEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type DragEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGemoji from "remark-gemoji";
 import remarkGfm from "remark-gfm";
@@ -1517,12 +1517,35 @@ function ActivityColumn({
                 <span className="badge" />
                 <span className="title mono">{`{${t.activityLabels[type]}}`}</span>
               </div>
-              {!collapsed && <div className="body mono">{item.text}</div>}
+              {!collapsed && <LogBody text={item.text} />}
             </div>
           );
         })}
       </div>
     </section>
+  );
+}
+
+function LogBody({ text }: { text: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const shouldStickToBottomRef = useRef(true);
+
+  const handleScroll = useCallback(() => {
+    const node = ref.current;
+    if (!node) return;
+    shouldStickToBottomRef.current = isScrolledToBottom(node);
+  }, []);
+
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (!node || !shouldStickToBottomRef.current) return;
+    node.scrollTop = node.scrollHeight;
+  }, [text]);
+
+  return (
+    <div className="body mono" ref={ref} onScroll={handleScroll}>
+      {text}
+    </div>
   );
 }
 
@@ -1580,6 +1603,10 @@ function useAutoScroll(items: unknown[]) {
     if (node) node.scrollTop = node.scrollHeight;
   }, [items]);
   return ref;
+}
+
+function isScrolledToBottom(node: HTMLElement): boolean {
+  return node.scrollHeight - node.scrollTop - node.clientHeight < 8;
 }
 
 function loadCollapsed(): Set<ActivityType> {

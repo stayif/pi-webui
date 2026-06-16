@@ -23,6 +23,7 @@ sessions/
 
 # WebUI-local state (which tabs the user opened). Machine-specific, not shared.
 .pi-webui-state.json
+.test_run.bat
 
 # Local agent notes and scratch logs. These often reference machine-local paths.
 AGENTS.md

@@ -170,11 +170,94 @@ export function applyEvent(
       break;
 
     case "compaction_end":
+      {
+        const errorMessage = (e as { errorMessage?: unknown }).errorMessage;
+        const aborted = (e as { aborted?: unknown }).aborted === true;
+        const willRetry = (e as { willRetry?: unknown }).willRetry === true;
+        const text =
+          typeof errorMessage === "string" && errorMessage
+            ? `Compaction failed: ${errorMessage}`
+            : aborted
+              ? "Compaction aborted."
+              : willRetry
+                ? "Context compacted. Retrying prompt."
+                : "Context compacted.";
+        setItems((items) => [
+          ...items,
+          {
+            id: liveId(),
+            kind: "system",
+            text,
+            activity: typeof errorMessage === "string" && errorMessage ? "error" : "system",
+            isError: typeof errorMessage === "string" && errorMessage.length > 0,
+          },
+        ]);
+      }
+      break;
+
+    case "auto_retry_start": {
+      const attempt = numberField(e.attempt);
+      const maxAttempts = numberField(e.maxAttempts);
+      const delayMs = numberField(e.delayMs);
+      const errorMessage = typeof e.errorMessage === "string" ? e.errorMessage : "provider request failed";
+      const attemptText =
+        attempt != null && maxAttempts != null
+          ? `attempt ${attempt}/${maxAttempts}`
+          : attempt != null
+            ? `attempt ${attempt}`
+            : "retry";
+      const delayText = delayMs != null ? ` in ${formatDelay(delayMs)}` : "";
       setItems((items) => [
         ...items,
-        { id: liveId(), kind: "system", text: "Context compacted.", activity: "system" },
+        {
+          id: liveId(),
+          kind: "system",
+          text: `Provider retry scheduled (${attemptText}${delayText}): ${truncate(errorMessage, 900)}`,
+          activity: "error",
+          isError: true,
+        },
       ]);
       break;
+    }
+
+    case "auto_retry_end": {
+      const success = (e as { success?: unknown }).success === true;
+      const attempt = numberField(e.attempt);
+      const finalError = typeof e.finalError === "string" ? e.finalError : "";
+      setItems((items) => [
+        ...items,
+        {
+          id: liveId(),
+          kind: "system",
+          text: success
+            ? `Provider retry succeeded${attempt != null ? ` on attempt ${attempt}` : ""}.`
+            : `Provider retry failed${attempt != null ? ` after attempt ${attempt}` : ""}: ${truncate(finalError || "unknown error", 900)}`,
+          activity: success ? "system" : "error",
+          isError: !success,
+        },
+      ]);
+      break;
+    }
+
+    case "extension_error": {
+      const message =
+        typeof e.message === "string"
+          ? e.message
+          : typeof e.error === "string"
+            ? e.error
+            : "extension error";
+      setItems((items) => [
+        ...items,
+        {
+          id: liveId(),
+          kind: "system",
+          text: `Extension error: ${truncate(message, 900)}`,
+          activity: "error",
+          isError: true,
+        },
+      ]);
+      break;
+    }
   }
   return null;
 }
@@ -218,4 +301,13 @@ function resultToText(result: unknown): string {
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+function numberField(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function formatDelay(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${Math.round(ms / 100) / 10}s`;
 }
