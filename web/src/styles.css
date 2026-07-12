@@ -264,6 +264,10 @@ input {
   background: var(--bg);
 }
 
+.col-chat {
+  position: relative;
+}
+
 .col-sessions {
   border-right: 1px solid var(--border-soft);
 }
@@ -445,6 +449,199 @@ input {
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
+}
+
+.col-chat.tree-mode .chat-scroll {
+  gap: 0;
+  padding: var(--space-4) var(--space-5) var(--space-5);
+}
+
+.tree-toggle-fab {
+  position: absolute;
+  right: var(--space-5);
+  bottom: 184px;
+  z-index: 3;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--meta);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  box-shadow: var(--elev-raised);
+  transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast), transform var(--motion-fast);
+}
+
+.tree-toggle-fab:hover,
+.tree-toggle-fab.active {
+  background: color-mix(in oklab, var(--accent), transparent 90%);
+  border-color: color-mix(in oklab, var(--accent), transparent 58%);
+  color: var(--accent);
+}
+
+.tree-toggle-fab:active {
+  transform: translateY(0.5px);
+}
+
+.tree-toggle-fab svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+}
+
+.session-tree-view {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  max-width: 980px;
+  align-self: stretch;
+}
+
+.tree-empty {
+  margin: auto;
+  color: var(--meta);
+  font-size: 13px;
+}
+
+.tree-node {
+  border-radius: var(--radius-sm);
+  color: var(--fg-2);
+}
+
+.tree-node:hover {
+  background: var(--surface);
+}
+
+.tree-node.active-path {
+  background: color-mix(in oklab, var(--accent), transparent 96%);
+}
+
+.tree-node.expanded {
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--border-soft);
+}
+
+.tree-node-row {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 4px 8px 4px 0;
+  cursor: pointer;
+}
+
+.tree-rail {
+  flex: 0 0 auto;
+  min-width: calc(var(--depth) * 20px);
+  color: var(--meta);
+  font-size: 12px;
+  white-space: pre;
+  text-align: right;
+}
+
+.tree-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 2px;
+  background: var(--t-system);
+}
+
+.tree-node.active-path .tree-dot {
+  background: var(--accent);
+}
+
+.tree-main {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.tree-label {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.tree-preview {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  color: var(--fg-2);
+}
+
+.tree-time,
+.tree-active {
+  flex: 0 0 auto;
+  color: var(--meta);
+  font-size: 10px;
+}
+
+.tree-active {
+  color: var(--accent);
+}
+
+.tree-actions {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity var(--motion-fast), visibility var(--motion-fast);
+}
+
+.tree-node:hover .tree-actions,
+.tree-node.expanded .tree-actions {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.tree-actions button {
+  border: 0;
+  background: transparent;
+  color: var(--meta);
+  cursor: pointer;
+  font: 600 11px / 1 var(--font-body);
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+
+.tree-actions button:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--accent), transparent 90%);
+  color: var(--accent);
+}
+
+.tree-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.38;
+}
+
+.tree-node-body {
+  margin: 0 8px 8px calc((var(--depth) + 1) * 20px + 24px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--fg-2);
+  padding: var(--space-3);
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 11.5px;
+  line-height: 1.55;
 }
 
 .col-scroll::-webkit-scrollbar,

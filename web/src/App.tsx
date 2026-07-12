@@ -1,4 +1,4 @@
-import { type DragEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type DragEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGemoji from "remark-gemoji";
 import remarkGfm from "remark-gfm";
@@ -11,6 +11,7 @@ import type {
   SessionState,
   SessionSummary,
   TranscriptItem,
+  TreeNode,
   Workspace,
 } from "@protocol";
 
@@ -78,6 +79,12 @@ interface ForkRow {
   rail: string;
 }
 
+interface TreeRow {
+  node: TreeNode;
+  rail: string;
+  depth: number;
+}
+
 interface ComposerAttachment {
   id: string;
   type: "text" | "image";
@@ -103,6 +110,7 @@ export function App() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [items, setItems] = useState<TranscriptItem[]>([]);
+  const [treeNodes, setTreeNodes] = useState<TreeNode[]>([]);
   const [input, setInput] = useState("");
   const [theme, setTheme] = useState<Theme>(loadTheme);
   const [lang, setLang] = useState<Lang>(loadLang);
@@ -112,6 +120,7 @@ export function App() {
   const [sessionNames, setSessionNames] = useState<Record<string, string>>(loadSessionNames);
   const [storedModel, setStoredModel] = useState<StoredModelChoice | null>(loadStoredModel);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
+  const [treeMode, setTreeMode] = useState(false);
 
   const cursorRef = useRef(newCursor());
   const activeWsRef = useRef<string | null>(null);
@@ -199,6 +208,7 @@ export function App() {
       api.models(ws).catch(() => [] as ModelInfo[]),
       api.state(ws).catch(() => null),
     ]);
+    const tree = await api.tree(ws).catch(() => [] as TreeNode[]);
     cursorRef.current = newCursor();
     const transientDivider = abortDividerRef.current;
     setItems(
@@ -208,6 +218,7 @@ export function App() {
     );
     setSessions(sess);
     setModels(mods);
+    setTreeNodes(tree);
     if (st) setState(st);
   }, []);
 
@@ -247,6 +258,9 @@ export function App() {
         }
         break;
       case "fork_prefill":
+        if (msg.workspaceId === activeWsRef.current) setInput(msg.text);
+        break;
+      case "composer_prefill":
         if (msg.workspaceId === activeWsRef.current) setInput(msg.text);
         break;
       case "error":
@@ -434,6 +448,20 @@ export function App() {
     send({ type: "compact", workspaceId: activeWs });
   }, [activeWs, send, state?.isCompacting]);
 
+  const handleToggleTreeMode = useCallback(() => {
+    setTreeMode((current) => {
+      const next = !current;
+      if (next && activeWs) void api.tree(activeWs).then(setTreeNodes).catch(() => {});
+      return next;
+    });
+  }, [activeWs]);
+
+  const handleNavigateTree = useCallback((targetId: string, summarize: boolean) => {
+    if (!activeWs || runtimeBusy) return;
+    send({ type: "navigate_tree", workspaceId: activeWs, targetId, summarize });
+    setTreeMode(false);
+  }, [activeWs, runtimeBusy, send]);
+
   return (
     <I18nProvider value={t}>
     <div className="app">
@@ -478,6 +506,8 @@ export function App() {
           thinkingOptions={thinkingOptions}
           sessionName={sessionName}
           sessionMeta={formatSessionMeta(state, t)}
+          treeMode={treeMode}
+          treeNodes={treeNodes}
           onSubmit={submit}
           onAbort={() => activeWs && send({ type: "abort", workspaceId: activeWs })}
           onClearQueue={() => activeWs && send({ type: "clear_queue", workspaceId: activeWs })}
@@ -485,6 +515,8 @@ export function App() {
           onSetThinkingLevel={(level) =>
             activeWs && send({ type: "set_thinking_level", level, workspaceId: activeWs })}
           onCompact={handleCompact}
+          onToggleTreeMode={handleToggleTreeMode}
+          onNavigateTree={handleNavigateTree}
           onRenameSession={handleRenameSession}
           onForkMessage={(entryId, position) =>
             activeWs && !runtimeBusy && send({ type: "fork", entryId, position, workspaceId: activeWs })}
@@ -871,12 +903,16 @@ function ChatColumn({
   thinkingOptions,
   sessionName,
   sessionMeta,
+  treeMode,
+  treeNodes,
   onSubmit,
   onAbort,
   onClearQueue,
   onSetModel,
   onSetThinkingLevel,
   onCompact,
+  onToggleTreeMode,
+  onNavigateTree,
   onRenameSession,
   onForkMessage,
   forkDisabled,
@@ -891,18 +927,22 @@ function ChatColumn({
   thinkingOptions: string[];
   sessionName: string;
   sessionMeta: string | null;
+  treeMode: boolean;
+  treeNodes: TreeNode[];
   onSubmit: (text?: string, attachments?: PromptAttachment[]) => void;
   onAbort: () => void;
   onClearQueue: () => void;
   onSetModel: (provider: string, modelId: string) => void;
   onSetThinkingLevel: (level: string) => void;
   onCompact: () => void;
+  onToggleTreeMode: () => void;
+  onNavigateTree: (targetId: string, summarize: boolean) => void;
   onRenameSession: (nextName: string) => void;
   onForkMessage: (entryId: string, position: "before" | "at") => void;
   forkDisabled: boolean;
 }) {
   const t = useT();
-  const scrollRef = useAutoScroll(items);
+  const scrollRef = useAutoScroll(treeMode ? treeNodes : items);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
@@ -963,7 +1003,7 @@ function ChatColumn({
   }, [attachments, showDropNotice, t]);
 
   return (
-    <section className="col col-chat">
+    <section className={`col col-chat ${treeMode ? "tree-mode" : ""}`}>
       <div className="col-head">
         <SessionNameEditor value={sessionName} onSubmit={onRenameSession} />
         <span className="spacer" />
@@ -973,21 +1013,42 @@ function ChatColumn({
       </div>
 
       <div className="chat-scroll" ref={scrollRef}>
-        {items.length === 0 && <div className="empty-chat"><p>{t.startConversation}</p></div>}
-        {items.map((item) =>
-          item.kind === "divider" ? (
-            <ChatDivider key={item.id} text={item.text} />
-          ) : (
-            <MessageBubble
-              key={item.id}
-              item={item}
-              providerId={currentModel?.provider ?? state?.model?.provider ?? "local"}
-              onForkMessage={onForkMessage}
-              forkDisabled={forkDisabled}
-            />
-          ),
+        {treeMode ? (
+          <SessionTreeNavigator
+            nodes={treeNodes}
+            navigationDisabled={isRuntimeBusy(state)}
+            onNavigate={onNavigateTree}
+          />
+        ) : (
+          <>
+            {items.length === 0 && <div className="empty-chat"><p>{t.startConversation}</p></div>}
+            {items.map((item) =>
+              item.kind === "divider" ? (
+                <ChatDivider key={item.id} text={item.text} />
+              ) : (
+                <MessageBubble
+                  key={item.id}
+                  item={item}
+                  providerId={currentModel?.provider ?? state?.model?.provider ?? "local"}
+                  onForkMessage={onForkMessage}
+                  forkDisabled={forkDisabled}
+                />
+              ),
+            )}
+          </>
         )}
       </div>
+
+      <button
+        type="button"
+        className={`tree-toggle-fab ${treeMode ? "active" : ""}`}
+        title={treeMode ? t.treeNavigate : t.treeToggle}
+        aria-label={treeMode ? t.treeNavigate : t.treeToggle}
+        aria-pressed={treeMode}
+        onClick={onToggleTreeMode}
+      >
+        <TreeIcon />
+      </button>
 
       <div className="composer">
         <div className="composer-bar">
@@ -1102,6 +1163,82 @@ function ChatColumn({
         {dropNotice && <div className="drop-notice">{dropNotice}</div>}
       </div>
     </section>
+  );
+}
+
+function SessionTreeNavigator({
+  nodes,
+  navigationDisabled,
+  onNavigate,
+}: {
+  nodes: TreeNode[];
+  navigationDisabled: boolean;
+  onNavigate: (targetId: string, summarize: boolean) => void;
+}) {
+  const t = useT();
+  const rows = useMemo(() => flattenTreeRows(nodes), [nodes]);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setExpandedId(null);
+  }, [nodes]);
+
+  if (rows.length === 0) return <div className="tree-empty">{t.treeEmpty}</div>;
+
+  return (
+    <div className="session-tree-view" aria-label={t.treeNavigate}>
+      {rows.map(({ node, rail, depth }) => {
+        const expanded = expandedId === node.id;
+        const preview = node.preview || node.label;
+        const body = node.body || preview;
+        return (
+          <div
+            key={node.id}
+            className={`tree-node ${expanded ? "expanded" : ""} ${node.onActiveBranch ? "active-path" : ""}`}
+            style={{ "--depth": depth } as CSSProperties}
+            onClick={() => setExpandedId((current) => (current === node.id ? null : node.id))}
+          >
+            <div className="tree-node-row">
+              <span className="tree-rail mono">{rail}</span>
+              <span className="tree-dot" />
+              <span className="tree-main">
+                <span className="tree-label mono">{node.label}</span>
+                <span className="tree-preview">{preview}</span>
+              </span>
+              {node.timestamp && <span className="tree-time mono">{relTime(node.timestamp, t)}</span>}
+              {node.onActiveBranch && <span className="tree-active mono">{t.treeActive}</span>}
+              <span className="tree-actions">
+                <button
+                  type="button"
+                  disabled={navigationDisabled}
+                  title={navigationDisabled ? t.treeDisabledBusy : t.treeGoTitle}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (!navigationDisabled) onNavigate(node.id, false);
+                  }}
+                >
+                  {t.treeGo}
+                </button>
+                <button
+                  type="button"
+                  disabled={navigationDisabled}
+                  title={navigationDisabled ? t.treeDisabledBusy : t.treeSummarize}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (!navigationDisabled) onNavigate(node.id, true);
+                  }}
+                >
+                  {t.treeSummarize}
+                </button>
+              </span>
+            </div>
+            {expanded && (
+              <pre className="tree-node-body mono">{body}</pre>
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -1800,6 +1937,32 @@ function flattenForkRows(node: SessionTreeNode): ForkRow[] {
     });
   };
   visit(node.children, []);
+  return rows;
+}
+
+function flattenTreeRows(nodes: TreeNode[]): TreeRow[] {
+  const rows: TreeRow[] = [];
+
+  const visit = (node: TreeNode, depth: number, rail: string) => {
+    rows.push({ node, rail, depth });
+
+    if (node.children.length === 0) return;
+
+    const mainChild = node.children.find((child) => child.onActiveBranch) ?? node.children[0];
+    const branchChildren = node.children.filter((child) => child !== mainChild);
+
+    branchChildren.forEach((child, index) => {
+      const isLast = index === branchChildren.length - 1;
+      const branchRail = `${"  ".repeat(Math.max(0, depth))}${isLast ? "└─" : "├─"}`;
+      visit(child, depth + 1, branchRail);
+    });
+
+    if (mainChild) {
+      visit(mainChild, depth, depth === 0 ? "" : "  ".repeat(depth));
+    }
+  };
+
+  nodes.forEach((node) => visit(node, 0, ""));
   return rows;
 }
 
