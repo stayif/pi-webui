@@ -28,7 +28,7 @@ type Setter = (fn: (items: TranscriptItem[]) => TranscriptItem[]) => void;
 
 /**
  * Fold one raw Pi event into the transcript. Returns true if the event implies
- * a streaming-state change the caller may want to reflect (agent_start/end).
+ * a streaming-state change the caller may want to reflect (agent_start/settled).
  *
  * Defensive about shapes: the SDK union is large and may grow, so unrecognized
  * events are ignored rather than throwing.
@@ -37,7 +37,7 @@ export function applyEvent(
   event: unknown,
   setItems: Setter,
   cursor: StreamCursor,
-): "start" | "end" | null {
+): "start" | "settled" | null {
   const e = event as { type?: string; [k: string]: unknown };
   switch (e.type) {
     case "agent_start":
@@ -46,7 +46,10 @@ export function applyEvent(
     case "agent_end":
       cursor.blocks.clear();
       cursor.currentMessageId = undefined;
-      return "end";
+      return null;
+
+    case "agent_settled":
+      return "settled";
 
     case "message_start":
       cursor.blocks.clear();

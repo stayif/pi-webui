@@ -35,9 +35,10 @@ export function createApi(mgr: WorkspaceManager): Hono {
   api.get("/sessions", async (c) => {
     const cwd = mgr.resolvePath(c.req.query("ws") || undefined);
     const all = c.req.query("all") === "1";
+    const sessionDir = mgr.sessionDirFor(cwd);
     const infos = all
-      ? await SessionManager.listAll()
-      : await SessionManager.list(cwd);
+      ? await SessionManager.listAll(sessionDir)
+      : await SessionManager.list(cwd, sessionDir);
     const summaries: SessionSummary[] = infos.map((s) => ({
       path: s.path,
       id: s.id,
@@ -91,11 +92,12 @@ export function createApi(mgr: WorkspaceManager): Hono {
     }
   });
 
-  // ── models (shared registry — process-global) ──
+  // ── models (project extensions can register providers per runtime) ──
 
-  api.get("/models", (c) =>
-    c.json({ models: mgr.sharedModels }),
-  );
+  api.get("/models", (c) => {
+    const rt = mgr.resolveRuntime(c.req.query("ws") || undefined);
+    return c.json({ models: rt ? rt.listModels() : mgr.sharedModels });
+  });
 
   return api;
 }

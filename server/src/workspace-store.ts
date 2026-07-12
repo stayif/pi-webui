@@ -46,8 +46,9 @@ export class WorkspaceStore {
 
   save(data: WorkspaceStoreData): void {
     try {
-      fs.mkdirSync(path.dirname(this.file), { recursive: true });
-      fs.writeFileSync(this.file, JSON.stringify(data, null, 2));
+      fs.mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(this.file, JSON.stringify(data, null, 2), { mode: 0o600 });
+      fs.chmodSync(this.file, 0o600);
     } catch {
       // Persistence is best-effort; a failed write must not crash the server.
     }

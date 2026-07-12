@@ -111,6 +111,7 @@ export interface Strings {
 
   // App level
   abortExecution: string;
+  projectTrustPrompt: (cwd: string) => string;
 
   // Model picker
   noModel: string;
@@ -198,7 +199,7 @@ const zh: Strings = {
   forkSession: "Fork 会话",
 
   contextUsage: "当前会话上下文占用",
-  compactTitle: "压缩上下文 (/compact)",
+  compactTitle: "压缩上下文",
   compactAria: "压缩上下文",
   compact: "压缩",
 
@@ -222,6 +223,7 @@ const zh: Strings = {
   close: "关闭",
 
   abortExecution: "中断执行",
+  projectTrustPrompt: (cwd) => `信任此项目？\n${cwd}\n\n信任后，Pi 可加载项目 .pi 设置和资源、安装缺失的项目依赖，并执行项目扩展。`,
 
   noModel: "(无模型)",
   noConfiguredModels: "没有已配置的模型",
@@ -307,7 +309,7 @@ const en: Strings = {
   forkSession: "Fork session",
 
   contextUsage: "Current session context usage",
-  compactTitle: "Compact context (/compact)",
+  compactTitle: "Compact context",
   compactAria: "Compact context",
   compact: "Compact",
 
@@ -331,6 +333,7 @@ const en: Strings = {
   close: "Close",
 
   abortExecution: "Execution aborted",
+  projectTrustPrompt: (cwd) => `Trust this project?\n${cwd}\n\nTrusting it lets Pi load project .pi settings and resources, install missing project packages, and run project extensions.`,
 
   noModel: "(no model)",
   noConfiguredModels: "No models configured",

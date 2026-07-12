@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
+import os from "node:os";
 
 import {
   AuthStorage,
@@ -7,10 +8,11 @@ import {
   SettingsManager,
   SessionManager,
   getAgentDir,
+  ProjectTrustStore,
 } from "@earendil-works/pi-coding-agent";
 
-import { RuntimeManager } from "./runtime-manager.ts";
-import { createRootClone } from "./root-clone.ts";
+import { RuntimeManager, type ProjectTrustResolver } from "./runtime-manager.ts";
+import { getProjectTrustStatus } from "./project-trust.ts";
 import { WorkspaceStore } from "./workspace-store.ts";
 import type { ModelInfo, SessionState, Workspace } from "./protocol.ts";
 
@@ -38,8 +40,12 @@ export class WorkspaceManager {
   private paths = new Map<string, string>();
   /** Normalised id → RuntimeManager (lazy, NOT persisted). */
   private runtimes = new Map<string, RuntimeManager>();
+  /** One lazy runtime creation per workspace avoids duplicate trust prompts. */
+  private startingRuntimes = new Map<string, Promise<RuntimeManager>>();
   private activeId: string | null = null;
   private readonly store: WorkspaceStore;
+  private readonly agentDir = getAgentDir();
+  private readonly trustStore = new ProjectTrustStore(this.agentDir);
 
   /** Process-global — model availability is the same regardless of workspace. */
   readonly sharedModels: ModelInfo[];
@@ -116,15 +122,26 @@ export class WorkspaceManager {
    * Resolve a runtime for session-scoped operations. Creates one lazily if the
    * workspace exists but hasn't had a session opened yet.
    */
-  async ensureRuntime(workspaceId?: string): Promise<RuntimeManager> {
+  async ensureRuntime(
+    workspaceId?: string,
+    resolveProjectTrust?: ProjectTrustResolver,
+  ): Promise<RuntimeManager> {
     const id = workspaceId ?? this.activeId;
     if (!id || !this.paths.has(id)) {
       throw new Error(`No workspace: ${workspaceId ?? "(active)"}`);
     }
     const existing = this.runtimes.get(id);
     if (existing) return existing;
+    const starting = this.startingRuntimes.get(id);
+    if (starting) return starting;
     const resolved = this.paths.get(id)!;
-    return this.spawnRuntime(resolved);
+    const created = this.spawnRuntime(resolved, resolveProjectTrust);
+    this.startingRuntimes.set(id, created);
+    try {
+      return await created;
+    } finally {
+      if (this.startingRuntimes.get(id) === created) this.startingRuntimes.delete(id);
+    }
   }
 
   // ---- workspace lifecycle ----
@@ -179,7 +196,7 @@ export class WorkspaceManager {
         id,
         path: p,
         name: path.basename(p) || p,
-        status: rt ? (rt.isStreaming ? "running" : "idle") : "offline",
+        status: rt ? (rt.isBusy ? "running" : "idle") : "offline",
         ...defaults,
       });
     }
@@ -187,33 +204,32 @@ export class WorkspaceManager {
   }
 
   /** Session-scoped commands call this to get a runtime (lazy-spawned if needed). */
-  async switchSession(workspaceId: string | undefined, sessionPath: string): Promise<void> {
-    const rt = await this.ensureRuntime(workspaceId);
+  async switchSession(
+    workspaceId: string | undefined,
+    sessionPath: string,
+    resolveProjectTrust?: ProjectTrustResolver,
+  ): Promise<void> {
+    const cwd = this.resolvePath(workspaceId);
+    await this.assertKnownSession(cwd, sessionPath);
+    const rt = await this.ensureRuntime(workspaceId, resolveProjectTrust);
     await rt.switchSession(sessionPath);
   }
 
-  async newSession(workspaceId: string | undefined): Promise<void> {
-    const rt = await this.ensureRuntime(workspaceId);
+  async newSession(workspaceId: string | undefined, resolveProjectTrust?: ProjectTrustResolver): Promise<void> {
+    const rt = await this.ensureRuntime(workspaceId, resolveProjectTrust);
     await rt.newSession();
   }
 
-  async cloneSession(workspaceId: string | undefined, sessionPath: string): Promise<void> {
+  async cloneSession(
+    workspaceId: string | undefined,
+    sessionPath: string,
+    resolveProjectTrust?: ProjectTrustResolver,
+  ): Promise<void> {
     const cwd = this.resolvePath(workspaceId);
-    const resolvedPath = path.resolve(sessionPath);
-    const available = new Set((await SessionManager.list(cwd)).map((session) => path.resolve(session.path)));
-    if (!available.has(resolvedPath)) {
-      throw new Error(`Unknown session: ${resolvedPath}`);
-    }
+    const resolvedPath = await this.assertKnownSession(cwd, sessionPath);
 
-    const rt = this.resolveRuntime(workspaceId);
-    const activeSessionFile = rt?.session.sessionFile ? path.resolve(rt.session.sessionFile) : null;
-    if (rt?.isStreaming && activeSessionFile === resolvedPath) {
-      throw new Error("Cannot clone the active session while it is running.");
-    }
-
-    const cloned = await createRootClone(resolvedPath);
-    const nextRt = await this.ensureRuntime(workspaceId);
-    await nextRt.switchSession(cloned.path);
+    const rt = await this.ensureRuntime(workspaceId, resolveProjectTrust);
+    await rt.cloneSession(resolvedPath);
   }
 
   async reloadSession(workspaceId: string | undefined): Promise<void> {
@@ -227,7 +243,7 @@ export class WorkspaceManager {
     const requested = [...new Set(sessionPaths.map((sessionPath) => path.resolve(sessionPath)))];
     if (requested.length === 0) return;
 
-    const available = new Set((await SessionManager.list(cwd)).map((session) => path.resolve(session.path)));
+    const available = new Set((await SessionManager.list(cwd, this.sessionDirFor(cwd))).map((session) => path.resolve(session.path)));
     for (const sessionPath of requested) {
       if (!available.has(sessionPath)) {
         throw new Error(`Unknown session: ${sessionPath}`);
@@ -290,8 +306,17 @@ export class WorkspaceManager {
   }
 
   /** Create and wire a runtime. Only called lazily by ensureRuntime(). */
-  private async spawnRuntime(resolved: string): Promise<RuntimeManager> {
-    const rt = await RuntimeManager.create(resolved, resolved);
+  private async spawnRuntime(resolved: string, resolveProjectTrust?: ProjectTrustResolver): Promise<RuntimeManager> {
+    const rt = await RuntimeManager.create(
+      resolved,
+      resolved,
+      this.sessionDirFor(resolved),
+      resolveProjectTrust,
+    );
+    if (!this.paths.has(resolved)) {
+      await rt.dispose();
+      throw new Error("Workspace was closed while starting Pi.");
+    }
     rt.onAgentEvent = (id, ev) => this.onAgentEvent(id, ev);
     rt.onSessionReplaced = (state) => this.onSessionReplaced(state);
     rt.onStatusChanged = () => this.onWorkspacesChanged();
@@ -316,13 +341,13 @@ export class WorkspaceManager {
   }
 
   private resolveWorkspaceDefaults(cwd: string): Pick<Workspace, "defaultModel" | "defaultThinkingLevel" | "defaultThinkingLevels"> {
-    const settings = SettingsManager.create(cwd, getAgentDir());
+    const settings = this.settingsForWorkspace(cwd);
     const provider = settings.getDefaultProvider();
     const modelId = settings.getDefaultModel();
-    const model =
-      provider && modelId
-        ? this.modelRegistry.find(provider, modelId)
-        : (this.modelRegistry.getAvailable()[0] ?? undefined);
+    const configuredModel = provider && modelId ? this.modelRegistry.find(provider, modelId) : undefined;
+    const model = configuredModel && this.modelRegistry.hasConfiguredAuth(configuredModel)
+      ? configuredModel
+      : (this.modelRegistry.getAvailable()[0] ?? undefined);
     if (!model) return {};
 
     const thinkingLevels = getSupportedThinkingLevelsFromModel(model);
@@ -333,11 +358,35 @@ export class WorkspaceManager {
       defaultThinkingLevels: thinkingLevels,
     };
   }
+
+  private async assertKnownSession(cwd: string, sessionPath: string): Promise<string> {
+    const resolvedPath = path.resolve(sessionPath);
+    const session = (await SessionManager.list(cwd, this.sessionDirFor(cwd))).find(
+      (candidate) => path.resolve(candidate.path) === resolvedPath,
+    );
+    if (!session || path.resolve(session.cwd) !== path.resolve(cwd)) {
+      throw new Error(`Unknown session: ${resolvedPath}`);
+    }
+    return resolvedPath;
+  }
+
+  sessionDirFor(cwd: string): string | undefined {
+    const running = this.runtimes.get(WorkspaceManager.idFor(cwd));
+    if (running) return running.sessionDir;
+    const envSessionDir = process.env.PI_CODING_AGENT_SESSION_DIR;
+    if (envSessionDir) return expandSessionDir(envSessionDir);
+    return this.settingsForWorkspace(cwd).getSessionDir();
+  }
+
+  private settingsForWorkspace(cwd: string): SettingsManager {
+    const trust = getProjectTrustStatus(cwd, this.agentDir, this.trustStore);
+    return SettingsManager.create(cwd, this.agentDir, { projectTrusted: trust.trusted });
+  }
 }
 
 type RegistryModel = ReturnType<ModelRegistry["getAvailable"]>[number];
 
-const EXTENDED_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+const EXTENDED_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 function modelToInfo(model: RegistryModel): ModelInfo {
   return {
@@ -356,7 +405,7 @@ function getSupportedThinkingLevelsFromModel(model: RegistryModel): string[] {
   return EXTENDED_THINKING_LEVELS.filter((level) => {
     const mapped = model.thinkingLevelMap?.[level];
     if (mapped === null) return false;
-    if (level === "xhigh") return mapped !== undefined;
+    if (level === "xhigh" || level === "max") return mapped !== undefined;
     return true;
   });
 }
@@ -374,4 +423,12 @@ function clampThinkingLevel(level: string, availableLevels: string[]): string {
     if (candidate && availableLevels.includes(candidate)) return candidate;
   }
   return availableLevels[0] ?? "off";
+}
+
+function expandSessionDir(value: string): string {
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/") || (process.platform === "win32" && value.startsWith("~\\"))) {
+    return path.join(os.homedir(), value.slice(2));
+  }
+  return path.resolve(value);
 }

@@ -3,13 +3,16 @@ import {
   ModelRegistry,
   SettingsManager,
   SessionManager,
+  ProjectTrustStore,
   createAgentSessionRuntime,
   createAgentSessionServices,
   createAgentSessionFromServices,
   getAgentDir,
   type AgentSession,
   type AgentSessionRuntime,
+  type AgentSessionRuntimeDiagnostic,
   type AgentSessionServices,
+  type LoadExtensionsResult,
   type PromptOptions,
 } from "@earendil-works/pi-coding-agent";
 
@@ -20,7 +23,21 @@ import type {
   TranscriptItem,
   TreeNode,
 } from "./protocol.ts";
+import { getProjectTrustStatus, resolveExtensionProjectTrust } from "./project-trust.ts";
+import { createRootClone } from "./root-clone.ts";
 import { messagesToTranscript } from "./transcript.ts";
+
+export interface ProjectTrustRequest {
+  workspaceId: string;
+  cwd: string;
+}
+
+export interface ProjectTrustResolution {
+  trusted: boolean;
+  remember: boolean;
+}
+
+export type ProjectTrustResolver = (request: ProjectTrustRequest) => Promise<ProjectTrustResolution>;
 
 /**
  * Owns a single Pi AgentSessionRuntime bound to one workspace (project cwd).
@@ -37,6 +54,10 @@ import { messagesToTranscript } from "./transcript.ts";
 export class RuntimeManager {
   private runtime!: AgentSessionRuntime;
   private unsubscribe?: () => void;
+  private sessionTrust = new Map<string, boolean>();
+  private compactionInProgress = false;
+  private sessionMutationInProgress = false;
+  private promptPreflightInProgress = false;
 
   /** Forward a raw AgentSession event to the host (tagged with workspaceId). */
   onAgentEvent: (workspaceId: string, event: unknown) => void = () => {};
@@ -45,10 +66,20 @@ export class RuntimeManager {
   /** Streaming/compaction state changed; host may want to refresh tab status. */
   onStatusChanged: (workspaceId: string) => void = () => {};
 
-  private constructor(readonly id: string, private readonly cwd: string) {}
+  private constructor(
+    readonly id: string,
+    private readonly cwd: string,
+    private readonly initialSessionDir: string | undefined,
+    private readonly resolveProjectTrust?: ProjectTrustResolver,
+  ) {}
 
-  static async create(id: string, cwd: string): Promise<RuntimeManager> {
-    const mgr = new RuntimeManager(id, cwd);
+  static async create(
+    id: string,
+    cwd: string,
+    initialSessionDir: string | undefined,
+    resolveProjectTrust?: ProjectTrustResolver,
+  ): Promise<RuntimeManager> {
+    const mgr = new RuntimeManager(id, cwd, initialSessionDir, resolveProjectTrust);
     await mgr.init();
     return mgr;
   }
@@ -59,23 +90,49 @@ export class RuntimeManager {
     // on every replacement so a /switch into a different project still works.
     const authStorage = AuthStorage.create();
     const modelRegistry = ModelRegistry.create(authStorage);
-
-    const sessionManager = SessionManager.create(this.cwd);
+    const trustStore = new ProjectTrustStore(agentDir);
+    const sessionManager = SessionManager.create(this.cwd, this.initialSessionDir);
 
     this.runtime = await createAgentSessionRuntime(
       async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
+        const cachedTrust = this.sessionTrust.get(cwd);
+        const trust = cachedTrust === undefined
+          ? getProjectTrustStatus(cwd, agentDir, trustStore)
+          : { trusted: cachedTrust, needsResolution: false, needsPrompt: false };
+        const projectTrustDiagnostics: AgentSessionRuntimeDiagnostic[] = [];
+        const settingsManager = SettingsManager.create(cwd, agentDir, {
+          // Keep project resources out while Pi loads only user/global
+          // extensions for their project_trust policy.
+          projectTrusted: trust.needsResolution ? false : trust.trusted,
+        });
         const services: AgentSessionServices = await createAgentSessionServices({
           cwd,
           agentDir,
           authStorage,
           modelRegistry,
+          settingsManager,
+          resourceLoaderReloadOptions: trust.needsResolution
+            ? {
+                resolveProjectTrust: async ({ extensionsResult }) => {
+                  const resolution = await this.resolveProjectTrustDecision(
+                    cwd,
+                    trust,
+                    extensionsResult,
+                    projectTrustDiagnostics,
+                  );
+                  this.sessionTrust.set(cwd, resolution.trusted);
+                  if (resolution.remember) trustStore.set(cwd, resolution.trusted);
+                  return resolution.trusted;
+                },
+              }
+            : undefined,
         });
         const result = await createAgentSessionFromServices({
           services,
           sessionManager,
           sessionStartEvent,
         });
-        return { ...result, services, diagnostics: services.diagnostics };
+        return { ...result, services, diagnostics: [...services.diagnostics, ...projectTrustDiagnostics] };
       },
       { cwd: this.cwd, agentDir, sessionManager },
     );
@@ -100,6 +157,7 @@ export class RuntimeManager {
       if (
         t === "agent_start" ||
         t === "agent_end" ||
+        t === "agent_settled" ||
         t === "queue_update" ||
         t === "compaction_start" ||
         t === "compaction_end"
@@ -107,6 +165,27 @@ export class RuntimeManager {
         this.onStatusChanged(this.id);
       }
     });
+  }
+
+  private async resolveProjectTrustDecision(
+    cwd: string,
+    trust: ReturnType<typeof getProjectTrustStatus>,
+    extensionsResult: LoadExtensionsResult,
+    diagnostics: AgentSessionRuntimeDiagnostic[],
+  ): Promise<ProjectTrustResolution> {
+    const extensionDecision = await resolveExtensionProjectTrust(cwd, extensionsResult, (message) => {
+      diagnostics.push({ type: "warning", message });
+    });
+    if (extensionDecision) return extensionDecision;
+
+    if (!trust.needsPrompt) {
+      return { trusted: trust.trusted, remember: false };
+    }
+
+    const resolution = this.resolveProjectTrust
+      ? await this.resolveProjectTrust({ workspaceId: this.id, cwd })
+      : { trusted: false, remember: false };
+    return resolution;
   }
 
   get session(): AgentSession {
@@ -121,6 +200,20 @@ export class RuntimeManager {
     return this.session.isStreaming;
   }
 
+  get isBusy(): boolean {
+    return (
+      this.sessionMutationInProgress ||
+      this.compactionInProgress ||
+      this.promptPreflightInProgress ||
+      !this.session.isIdle ||
+      this.session.isCompacting
+    );
+  }
+
+  get sessionDir(): string {
+    return this.session.sessionManager.getSessionDir();
+  }
+
   async dispose(): Promise<void> {
     this.unsubscribe?.();
     await this.runtime.dispose();
@@ -133,10 +226,29 @@ export class RuntimeManager {
     streamingBehavior?: "steer" | "followUp",
     images?: NonNullable<PromptOptions["images"]>,
   ): Promise<void> {
+    if (
+      this.sessionMutationInProgress ||
+      this.compactionInProgress ||
+      this.session.isCompacting ||
+      this.promptPreflightInProgress
+    ) {
+      throw new Error("Cannot start a prompt while the session is changing.");
+    }
     const behavior = this.session.isStreaming
       ? streamingBehavior ?? "steer"
       : undefined;
-    await this.session.prompt(text, { streamingBehavior: behavior, images });
+    this.promptPreflightInProgress = true;
+    try {
+      await this.session.prompt(text, {
+        streamingBehavior: behavior,
+        images,
+        preflightResult: () => {
+          this.promptPreflightInProgress = false;
+        },
+      });
+    } finally {
+      this.promptPreflightInProgress = false;
+    }
   }
 
   async abort(): Promise<void> {
@@ -148,7 +260,21 @@ export class RuntimeManager {
   }
 
   async compact(customInstructions?: string): Promise<void> {
-    await this.session.compact(customInstructions);
+    if (
+      this.sessionMutationInProgress ||
+      this.compactionInProgress ||
+      this.session.isCompacting ||
+      this.promptPreflightInProgress
+    ) {
+      throw new Error("Context compaction is already in progress.");
+    }
+    this.compactionInProgress = true;
+    try {
+      await this.session.compact(customInstructions);
+    } finally {
+      this.compactionInProgress = false;
+      this.onStatusChanged(this.id);
+    }
   }
 
   async exportHtml(outputPath: string): Promise<string> {
@@ -158,11 +284,15 @@ export class RuntimeManager {
   // ---- session-replacement operations ----
 
   async newSession(): Promise<void> {
-    await this.runtime.newSession();
+    await this.runSessionMutation("start a new session", async () => {
+      await this.runtime.newSession();
+    });
   }
 
   async switchSession(sessionPath: string): Promise<void> {
-    await this.runtime.switchSession(sessionPath);
+    await this.runSessionMutation("switch sessions", async () => {
+      await this.runtime.switchSession(sessionPath);
+    });
   }
 
   /**
@@ -179,20 +309,33 @@ export class RuntimeManager {
    */
   async reloadSession(): Promise<void> {
     const file = this.session.sessionFile;
-    if (!file || this.session.isStreaming) return;
-    await this.runtime.switchSession(file);
+    if (!file) return;
+    await this.runSessionMutation("reload the session", async () => {
+      await this.runtime.switchSession(file);
+    });
   }
 
   async fork(entryId: string, position: "before" | "at" = "before"): Promise<string | undefined> {
-    const result = await this.runtime.fork(entryId, { position });
-    return result.selectedText;
+    return this.runSessionMutation("fork a session", async () => {
+      const result = await this.runtime.fork(entryId, { position });
+      return result.selectedText;
+    });
   }
 
   async navigateTree(targetId: string, summarize = false): Promise<string | undefined> {
-    const result = await this.session.navigateTree(targetId, { summarize });
-    // navigateTree stays in the same file (no runtime swap), so push a snapshot.
-    this.onSessionReplaced(this.snapshot());
-    return result.editorText;
+    return this.runSessionMutation("navigate the session tree", async () => {
+      const result = await this.session.navigateTree(targetId, { summarize });
+      // navigateTree stays in the same file (no runtime swap), so push a snapshot.
+      this.onSessionReplaced(this.snapshot());
+      return result.editorText;
+    });
+  }
+
+  async cloneSession(sourcePath: string): Promise<void> {
+    await this.runSessionMutation("clone a session", async () => {
+      const cloned = await createRootClone(sourcePath);
+      await this.runtime.switchSession(cloned.path);
+    });
   }
 
   // ---- model / thinking ----
@@ -227,6 +370,22 @@ export class RuntimeManager {
 
   setThinkingLevel(level: string): void {
     this.session.setThinkingLevel(level as never);
+  }
+
+  private assertIdle(action: string): void {
+    if (this.isBusy) {
+      throw new Error(`Cannot ${action} while the agent is still working.`);
+    }
+  }
+
+  private async runSessionMutation<T>(action: string, operation: () => Promise<T>): Promise<T> {
+    this.assertIdle(action);
+    this.sessionMutationInProgress = true;
+    try {
+      return await operation();
+    } finally {
+      this.sessionMutationInProgress = false;
+    }
   }
 
   // ---- history ----
@@ -309,14 +468,14 @@ export class RuntimeManager {
 
 type SessionModel = NonNullable<AgentSession["model"]>;
 
-const EXTENDED_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+const EXTENDED_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 function getSupportedThinkingLevelsFromModel(model: SessionModel): string[] {
   if (!model.reasoning) return ["off"];
   return EXTENDED_THINKING_LEVELS.filter((level) => {
     const mapped = model.thinkingLevelMap?.[level];
     if (mapped === null) return false;
-    if (level === "xhigh") return mapped !== undefined;
+    if (level === "xhigh" || level === "max") return mapped !== undefined;
     return true;
   });
 }

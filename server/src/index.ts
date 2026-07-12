@@ -8,34 +8,45 @@ import { Hono } from "hono";
 
 import { WorkspaceManager } from "./workspace-manager.ts";
 import { createApi } from "./routes.ts";
-import { WsBridge } from "./ws-bridge.ts";
+import { MAX_CLIENT_MESSAGE_BYTES, WsBridge } from "./ws-bridge.ts";
 
 const PORT = Number(process.env.PI_WEBUI_PORT ?? process.env.PORT ?? 9529);
-// Bind to loopback only. This server exposes the local Pi runtime — which can
-// run bash/edit/write — so it must never be reachable off the machine. There
-// is deliberately no auth layer; the security boundary is the loopback bind.
-const HOST = process.env.HOST ?? "127.0.0.1";
 
-/**
- * Loopback binding stops other *machines*, but not other *origins in the user's
- * own browser*. Any website the user visits can open a WebSocket to
- * `ws://127.0.0.1:<port>/ws` (browsers allow cross-origin WS connections) and
- * then drive the full command surface — open a workspace, prompt the agent,
- * run bash. That's cross-site WebSocket hijacking / DNS rebinding, and the
- * loopback bind does nothing against it.
- *
- * The guard: a real browser always stamps a forgeable-by-JS-proof `Origin` on
- * the WS handshake, and same-origin requests from our own page carry a loopback
- * origin. So we reject any handshake whose `Origin` is present and not loopback,
- * and additionally require the `Host` header to be loopback (blocks DNS
- * rebinding, where a rebound domain points at 127.0.0.1). Non-browser clients
- * (curl, a CLI) send no `Origin` and are allowed — they're outside the browser
- * threat model and can already talk to any local port.
- */
+// @hono/node-ws constructs ErrorEvent for socket errors, but Node 22 exposes
+// MessageEvent without ErrorEvent. Keep the adapter's oversized-frame error
+// path functional until the dependency ships its own fallback.
+if (!("ErrorEvent" in globalThis)) {
+  Object.defineProperty(globalThis, "ErrorEvent", {
+    configurable: true,
+    value: class ErrorEvent extends Event {
+      constructor(type: string, init: { error?: unknown } = {}) {
+        super(type);
+        Object.defineProperty(this, "error", { enumerable: true, value: init.error });
+      }
+    },
+  });
+}
+
 function isLoopbackHostname(hostname: string): boolean {
   const h = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
   return h === "127.0.0.1" || h === "localhost" || h === "::1";
 }
+
+function bindHost(): string {
+  const host = process.env.HOST ?? "127.0.0.1";
+  if (!isLoopbackHostname(host)) {
+    throw new Error(`pi-webui only supports loopback hosts; refusing to bind ${host}`);
+  }
+  // `localhost` is a DNS name. Bind an unambiguous loopback literal so a
+  // modified hosts/DNS configuration cannot accidentally expose the runtime.
+  if (host === "localhost") return "127.0.0.1";
+  return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+}
+
+// This process controls a Pi runtime that can execute bash and edit files. It
+// is intentionally local-only and must reject DNS-rebound browser requests as
+// well as non-loopback listener configuration.
+const HOST = bindHost();
 
 function isAllowedOrigin(origin: string): boolean {
   try {
@@ -83,23 +94,33 @@ async function main(): Promise<void> {
   const bridge = new WsBridge(mgr);
 
   const app = new Hono();
-  const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
+  const { injectWebSocket, upgradeWebSocket, wss } = createNodeWebSocket({ app });
+  wss.options.maxPayload = MAX_CLIENT_MESSAGE_BYTES;
+
+  app.use("*", async (c, next) => {
+    c.header("Content-Security-Policy", "base-uri 'none'; object-src 'none'; frame-ancestors 'none'");
+    c.header("X-Frame-Options", "DENY");
+    c.header("X-Content-Type-Options", "nosniff");
+    c.header("Referrer-Policy", "no-referrer");
+    if (!isLoopbackHost(c.req.header("host"))) {
+      return c.text("Forbidden host", 403);
+    }
+    const origin = c.req.header("origin");
+    if (origin && !isAllowedOrigin(origin)) {
+      return c.text("Forbidden origin", 403);
+    }
+    await next();
+  });
+
+  app.use("/api/*", async (c, next) => {
+    c.header("Cache-Control", "no-store");
+    await next();
+  });
 
   app.route("/api", createApi(mgr));
 
   app.get(
     "/ws",
-    (c, next) => {
-      // Reject cross-site WebSocket hijacking / DNS rebinding before upgrading.
-      const origin = c.req.header("origin");
-      if (origin && !isAllowedOrigin(origin)) {
-        return c.text("Forbidden origin", 403);
-      }
-      if (!isLoopbackHost(c.req.header("host"))) {
-        return c.text("Forbidden host", 403);
-      }
-      return next();
-    },
     upgradeWebSocket(() => ({
       onOpen: (_evt, ws) => bridge.add(ws),
       onMessage: (evt, ws) => {

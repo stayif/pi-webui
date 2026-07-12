@@ -2,6 +2,8 @@
 
 pi-webui 是一个本地轻量级 WebUI，用来驱动 [Pi Agent](https://github.com/earendil-works/pi)。它不是 Pi 的 fork，而是在 Node 进程里嵌入 `@earendil-works/pi-coding-agent` SDK，把终端里的 session、模型、推理日志和工具调用搬到浏览器里管理。
 
+当前嵌入的 Pi 发布版 SDK 为 `0.80.6`。
+
 当前版本定位为 `v0.1`：面向本机使用，优先保证独立运行、会话管理和日常交互顺手。
 
 核心原则是**非侵入**：pi-webui 只是 Pi 的本机 UI 宿主，不接管你的项目、不迁移 session、不复制 workspace、不写入 Pi 的 provider 密钥，也不把你的代码或会话同步到任何远端服务。
@@ -42,7 +44,15 @@ pi-webui 是一个本地轻量级 WebUI，用来驱动 [Pi Agent](https://github
 
 pi-webui 只绑定 `127.0.0.1`，没有登录系统，也没有远程访问鉴权。它驱动的 Pi runtime 可以运行 shell、编辑文件、写入 workspace，因此不要把端口暴露到局域网或公网。
 
-后端会拒绝非 loopback `Host` 的 WebSocket 握手，并拒绝带有非 loopback `Origin` 的浏览器 WebSocket 请求，用来降低 cross-site WebSocket hijacking / DNS rebinding 风险。
+后端只允许 loopback 地址绑定；若 `HOST` 被设为非 loopback 地址会拒绝启动。所有 HTTP、静态资源和 WebSocket 请求都会校验 loopback `Host`，带有 `Origin` 的浏览器请求还必须来自 loopback origin，用来降低 cross-site WebSocket hijacking / DNS rebinding 风险。
+
+当 workspace 含有项目级 Pi 资源（例如 `.pi/settings.json`、`.pi/extensions` 或 `.agents/skills`）时，WebUI 会先应用 Pi 的全局 trust extension、已保存决策和全局默认策略；只有策略仍为 `ask` 时才请求浏览器确认。拒绝后仍可使用基础 Pi runtime，但不会加载这些项目级资源。
+
+## Pi 0.80.6 兼容性
+
+本次升级跟随 npm 已发布的 Pi `0.80.6`，不包含本机 Pi 源码仓库中尚未发布的提交。WebUI 会按 Pi 的 `sessionDir` 设置或 `PI_CODING_AGENT_SESSION_DIR` 读取、创建、校验和删除 session；会话切换、fork、clone、tree 导航和 compaction 都会等待运行中的 agent 结束，避免 runtime 替换时出现并发状态错乱。
+
+事件处理已适配 Pi 的 `agent_settled`、`entry_appended` 和 `max` thinking level，并会从当前 runtime 读取项目 extension 新注册的 provider/model。Pi TUI 专属的 `/login`、`/settings`、`/share`、`/import` 命令不会因为 WebUI 调用了 SDK 就自动出现；若要支持它们，仍需要对应的 WebUI 流程。extension 的自定义 widget / `EntryRenderer`，以及 cache-miss 与 reasoning token 的细粒度展示，也仍是后续独立适配项。
 
 ## 环境要求
 
@@ -107,8 +117,9 @@ http://127.0.0.1:9529
 | --- | --- | --- |
 | `PI_WEBUI_PORT` | `9529` | 后端端口。开发时 Vite 会代理到这个端口 |
 | `PORT` | 空 | 后端端口 fallback，优先级低于 `PI_WEBUI_PORT` |
-| `HOST` | `127.0.0.1` | 后端绑定地址，建议保持默认 |
+| `HOST` | `127.0.0.1` | 后端绑定地址，仅允许 `127.0.0.1`、`localhost` 或 `::1`；`localhost` 会规范化绑定到 `127.0.0.1` |
 | `PI_WEBUI_STATE` | `.pi-webui-state.json` | WebUI 自己的 workspace 标签状态文件 |
+| `PI_CODING_AGENT_SESSION_DIR` | 空 | 覆盖 Pi session 存储目录，优先于 Pi settings 中的 `sessionDir` |
 
 ## 项目结构
 

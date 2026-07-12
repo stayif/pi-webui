@@ -124,6 +124,7 @@ export function App() {
 
   const cursorRef = useRef(newCursor());
   const activeWsRef = useRef<string | null>(null);
+  const sendRef = useRef<(message: ClientMessage) => void>(() => {});
   const abortDividerRef = useRef<{ workspaceId: string; sessionId: string; item: TranscriptItem } | null>(null);
   activeWsRef.current = activeWs;
 
@@ -247,13 +248,23 @@ export function App() {
           const change = applyEvent(msg.event, setItems, cursorRef.current);
           const eventType = (msg.event as { type?: unknown }).type;
           if (change === "start") setState((current) => (current ? { ...current, isStreaming: true } : current));
-          if (change === "end") {
+          if (change === "settled") {
             setState((current) => (current ? { ...current, isStreaming: false } : current));
             refreshSessionListWithBackoff();
             void hydrate(activeWsRef.current);
           }
-          if (eventType === "model_select" || eventType === "thinking_level_changed") {
+          if (
+            eventType === "model_select" ||
+            eventType === "thinking_level_changed" ||
+            eventType === "session_info_changed"
+          ) {
             void api.state(activeWsRef.current ?? undefined).then((next) => next && setState(next)).catch(() => {});
+          }
+          if (eventType === "session_info_changed") refreshSessionListWithBackoff();
+          if (eventType === "entry_appended") {
+            refreshSessionListWithBackoff();
+            const workspaceId = activeWsRef.current;
+            if (workspaceId) void api.tree(workspaceId).then(setTreeNodes).catch(() => {});
           }
         }
         break;
@@ -263,6 +274,17 @@ export function App() {
       case "composer_prefill":
         if (msg.workspaceId === activeWsRef.current) setInput(msg.text);
         break;
+      case "project_trust_request": {
+        const trusted = window.confirm(t.projectTrustPrompt(msg.cwd));
+        sendRef.current({
+          type: "resolve_project_trust",
+          requestId: msg.requestId,
+          workspaceId: msg.workspaceId,
+          trusted,
+          remember: trusted,
+        });
+        break;
+      }
       case "error":
         setItems((current) => [
           ...current,
@@ -276,9 +298,10 @@ export function App() {
         ]);
         break;
     }
-  }, [hydrate, refreshSessionListWithBackoff]);
+  }, [hydrate, refreshSessionListWithBackoff, t]);
 
   const { status, send } = usePiSocket(handleMessage);
+  sendRef.current = send;
 
   useEffect(() => {
     void hydrate(activeWs);
@@ -1890,6 +1913,8 @@ function thinkingLabel(level: string): string {
     case "high":
       return "High";
     case "xhigh":
+      return "XHigh";
+    case "max":
       return "Max";
     default:
       return level;
@@ -2153,8 +2178,12 @@ function decodeFileName(name: string): string {
 
 function providerIcon(id: string): string {
   if (id && PROVIDER_ICONS[id]) return PROVIDER_ICONS[id];
-  const letter = (id || "?").trim().charAt(0).toUpperCase() || "?";
+  const letter = escapeSvgText((id || "?").trim().charAt(0).toUpperCase() || "?");
   return `<svg viewBox="0 0 24 24"><text x="12" y="12" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="700" font-family="system-ui,sans-serif" fill="currentColor">${letter}</text></svg>`;
+}
+
+function escapeSvgText(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
 function relTime(iso: string, t: Strings): string {

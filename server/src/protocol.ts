@@ -179,6 +179,13 @@ export type ClientMessage =
   | ({ type: "reload_session" } & WorkspaceScoped)
   | ({ type: "fork"; entryId: string; position?: "before" | "at" } & WorkspaceScoped)
   | ({ type: "navigate_tree"; targetId: string; summarize?: boolean } & WorkspaceScoped)
+  | {
+      type: "resolve_project_trust";
+      requestId: string;
+      workspaceId: string;
+      trusted: boolean;
+      remember: boolean;
+    }
   // workspace lifecycle
   | { type: "open_workspace"; path: string }
   | { type: "close_workspace"; workspaceId: string }
@@ -200,4 +207,5 @@ export type ServerMessage =
   | { type: "fork_prefill"; workspaceId: string; text: string }
   /** Pi-native tree navigation editor text for pre-filling the composer. */
   | { type: "composer_prefill"; workspaceId: string; text: string }
+  | { type: "project_trust_request"; requestId: string; workspaceId: string; cwd: string }
   | { type: "error"; message: string };
